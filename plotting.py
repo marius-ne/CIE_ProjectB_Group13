@@ -80,7 +80,24 @@ def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: in
     fig.show()
 
 
-def plot_bridge_3d_variable_over_time_df(df, var_name, s: int = 4, log_scale: bool = False):
+def plot_bridge_3d_variable_over_time_combination(combination, s: int = 4, log_scale: bool = False):
+    """
+    Loads the dataframe for the given combination and visualizes a variable over time in 3D.
+
+    Args:
+        combination (tuple): (train_config, load, season, health, variable)
+        var_name (str): Name of the column to visualize.
+        s (int): Marker size.
+        log_scale (bool): If True, apply log10 to the variable values for color mapping.
+    """
+    df = read_data_file(*combination, filter_out_invalid_nodes=True)
+    var_name = VARIABLE_NAMES[combination[-1]]
+    plot_bridge_3d_variable_over_time_df(
+        df, var_name, s=s, log_scale=log_scale, title=combination_to_string(combination)
+    )
+
+
+def plot_bridge_3d_variable_over_time_df(df, var_name, s: int = 4, log_scale: bool = False, title: str = None):
     """
     Visualizes a given variable for all nodes over all time steps in 3D using Plotly.
     Adds a slider to select the time step instead of playback animation.
@@ -129,7 +146,7 @@ def plot_bridge_3d_variable_over_time_df(df, var_name, s: int = 4, log_scale: bo
                 hoverinfo='text'
             )],
             name=str(i),
-            layout=go.Layout(title_text=f"{var_name} at time {t:.2f}" + (" (log scale)" if log_scale else ""))
+            layout=go.Layout(title_text=f"{title if title is not None else var_name} at time {t:.2f}" + (" (log scale)" if log_scale else ""))
         ))
 
     # Initial frame
@@ -173,7 +190,7 @@ def plot_bridge_3d_variable_over_time_df(df, var_name, s: int = 4, log_scale: bo
             hoverinfo='text'
         )],
         layout=go.Layout(
-            title=f"{var_name} for all nodes over time" + (" (log scale)" if log_scale else ""),
+            title=title if title is not None else f"{var_name} for all nodes over time" + (" (log scale)" if log_scale else ""),
             scene=dict(
                 xaxis_title='X [m]',
                 yaxis_title='Y [m]',
@@ -261,3 +278,5 @@ def plot_bridge_loads_3d_slider(df, combination):
             description='Time Index'
         )
     )
+    
+    

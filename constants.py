@@ -63,6 +63,30 @@ TRAIN_CONFIGS = {
     2: "Two_trains_extreme_track_different_direction",
     3: "Two_trains_extreme_track_same_direction",
 }
+INDICATORS = [
+    "health",
+    "region",
+    "load",
+    "season",
+    "train_config",
+]
+ONE_HOT_INDICATORS = [
+    "health",
+    "region_0",
+    "region_1",
+    "region_2",
+    "region_3",
+    "region_4",
+    "region_5",
+    "load_0",
+    "load_1",
+    "season_0",
+    "season_1",
+    "train_config_0",
+    "train_config_1",
+    "train_config_2",
+    "train_config_3",
+]
 VARIABLE_NAMES = list(VARIABLES.values())
 
 

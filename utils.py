@@ -182,7 +182,10 @@ def get_variable_difference_between_combinations(comb1, comb2, filter_out_invali
     merge_cols = ["Node Number", "time", "X", "Y", "Z"]
     merged = pd.merge(df1, df2, on=merge_cols, suffixes=('_1', '_2'), how='inner')
 
-    # Compute difference
+    # Compute difference with safety check
+    if not (merged[f"{var_name}_1"].shape == merged[f"{var_name}_2"].shape and merged[f"{var_name}_1"].index.equals(merged[f"{var_name}_2"].index)):
+        raise ValueError("DataFrames to subtract do not have matching shapes or indices.")
+
     merged[var_name] = merged[f"{var_name}_1"] - merged[f"{var_name}_2"]
 
     # Select relevant columns
@@ -253,21 +256,13 @@ def get_data_variable_and_region_aggregated(
     Returns:
         pd.DataFrame: Merged data-frame with all variables as columns.
     """
-    # Generate all health and variable combinations for the given (train_config, load, season)
     train_config, load, season = scenario_combination
-    combinations_grouped_by_region = [
-      [
-        [train_config, load, season, region, variable]
-        for variable in VARIABLES.keys()
-      ]
-      for region in REGIONS.keys()
-    ]
 
     # Merge data for all healths in the scenario
     dfs_regions = []
-    for same_health_combinations in combinations_grouped_by_region:
+    for region in REGIONS.keys():
 
-        df_vars = get_data_variable_aggregated(same_health_combinations[0][:-1])
+        df_vars = get_data_variable_aggregated((train_config, load, season, region))
 
         dfs_regions.append(df_vars)
 
@@ -278,6 +273,37 @@ def get_data_variable_and_region_aggregated(
     df = pd.concat(dfs_regions,ignore_index=True)
 
     return df
+
+
+def get_data_variable_and_region_and_season_aggregated(
+    scenario_combination: tuple
+):
+    """
+    Reads all data files from one scenario of train_config and load, and aggregates across all seasons, regions, and variables.
+
+    Args:
+        scenario_combination (tuple): A tuple of (train_config, load) representing
+            the scenario for which to aggregate data across all seasons, regions, and variables.
+    Returns:
+        pd.DataFrame: Merged data-frame with all variables as columns for all seasons and regions.
+    """
+    train_config, load = scenario_combination
+    all_dfs = []
+    for season in SEASONS.keys():
+        for region in REGIONS.keys():
+            try:
+                df = get_data_variable_aggregated((train_config, load, season, region))
+                all_dfs.append(df)
+            except FileNotFoundError:
+                print(f"Skipping missing file for scenario: {combination_to_string((train_config, load, season, region, 0))}")
+                continue
+
+    if not all_dfs:
+        raise RuntimeError("No data files found for any season/region in this scenario.")
+        
+    df_all = pd.concat(all_dfs, ignore_index=True)
+    return df_all
+
 
 def get_data_all_aggregated():
     """
@@ -324,3 +350,94 @@ def select_df_subset(df, combination):
     ][["Node Number", "time", "health", var_name]]
     return df_subset
 
+def reshape_long_to_pca_ready(df, value_col='EquivalentStress'):
+    """
+    Transforms a long-format dataframe into a wide-format matrix for PCA.
+    
+    Input: df with columns [Node Number, health, time, load, season, train_config, EquivalentStress]
+    Output: df with rows as (Scenario + Time) and columns as Node Numbers.
+    """
+    
+    # 1. Define the columns that uniquely identify a "Bridge State" (The Row Index)
+    # These columns represent the metadata for each sample.
+    index_columns = ['health', 'region', 'load', 'season', 'train_config', 'time']
+    
+    # Ensure only columns that exist in the dataframe are used
+    index_columns = [col for col in index_columns if col in df.columns]
+    
+    # 2. Pivot the data
+    # index: becomes the rows
+    # columns: 'Node Number' creates one column per node (N columns)
+    # values: the actual stress value at that node
+    df_wide = df.pivot_table(
+        index=index_columns, 
+        columns='Node Number', 
+        values=value_col
+    )
+    
+    # 3. Clean up
+    # Resetting the index turns health/time back into normal columns for the classifier
+    df_wide = df_wide.reset_index()
+    
+    print(f"Reshaping complete.")
+    print(f"Number of Samples (Rows): {df_wide.shape[0]}")
+    print(f"Number of Nodes (Features): {df_wide.shape[1] - len(index_columns)}")
+    
+    return df_wide
+
+
+def reshape_multi_variable_to_pca(df, value_cols=None, one_hot_encoded=False):
+    """
+    Reshapes long-format data with multiple variables into a wide 
+    format suitable for PCA.
+    
+    Args:
+        df: Long-format dataframe with metadata and multiple physical variables.
+        value_cols: List of variables to include. If None, it uses the 8 variables 
+                    from your snippet.
+    """
+    if value_cols is None:
+        # Default physical variables from your data snippet
+        value_cols = [
+            'TotalDeformation', 
+            'DirectionalDeformation_X_axis', 
+            'DirectionalDeformation_Y_axis', 
+            'DirectionalDeformation_Z_axis', 
+            'EquivalentStress', 
+            'ShearStress_XY', 
+            'ShearStress_XZ', 
+            'ShearStress_YZ'
+        ]
+    
+    # 1. Filter for columns that actually exist in the dataframe
+    value_cols = [col for col in value_cols if col in df.columns]
+    
+    # 2. Metadata columns that define a "sample" (the row identity)
+    if one_hot_encoded:
+        metadata_cols = ['health', 'region_0', 'region_1', 'region_2', 'region_3', 'region_4', 'region_5',
+                         'load_0', 'load_1', 'season_0', 'season_1',
+                         'train_config_0', 'train_config_1', 'train_config_2', 'train_config_3',
+                         'time']
+    else:   
+        metadata_cols = ['health', 'load', 'season', 'train_config', 'time', 'region']
+    metadata_cols = [col for col in metadata_cols if col in df.columns]
+    
+    print(f"Processing {len(value_cols)} variables across {df['Node Number'].nunique()} nodes...")
+    
+    # 3. Pivot the table
+    # This creates a MultiIndex in the columns: (Variable Name, Node Number)
+    df_wide = df.pivot_table(
+        index=metadata_cols,
+        columns='Node Number',
+        values=value_cols
+    )
+    
+    # 4. Flatten the column names
+    # Converts (EquivalentStress, 1) -> "EquivalentStress_N1"
+    df_wide.columns = [f"{var}_N{node}" for var, node in df_wide.columns]
+    
+    # 5. Bring metadata back as normal columns
+    df_wide = df_wide.reset_index().fillna(0)
+    
+    print(f"Reshaping complete. Final Matrix Shape: {df_wide.shape}")
+    return df_wide
