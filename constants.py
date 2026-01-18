@@ -60,3 +60,6 @@ with open("valid_node_numbers.txt", "r") as f:
     global VALID_NODE_NUMBERS
     VALID_NODE_NUMBERS = {int(line.strip()) for line in f.readlines()}
 
+with open("all_node_numbers.txt", "r") as f:
+    global NODE_NUMBERS
+    NODE_NUMBERS = [int(line.strip()) for line in f.readlines()]
