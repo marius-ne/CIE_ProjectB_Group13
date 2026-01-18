@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
-from constants import TRAIN_CONFIGS, LOADS, SEASONS, REGIONS, VARIABLES, VARIABLE_NAMES
+from constants import TRAIN_CONFIGS, LOADS, SEASONS, REGIONS, VARIABLES, VARIABLE_NAMES, VALID_NODE_NUMBERS
 
 
 def combination_to_string(combination):
@@ -32,29 +32,6 @@ combinations_grouped_by_region = [
     combinations_grouped_by_variable[i:i + len(REGIONS)] for i in range(0, len(combinations_grouped_by_variable), len(REGIONS))
 ]
 
-def node_numbers_cache(filepath):
-    """
-    Returns a function that will read node numbers from the given file once,
-    and return the cached node numbers on subsequent calls.
-
-    Args:
-        filepath (str): Path to the file containing node numbers.
-
-    Returns:
-        function: A function that returns the cached node numbers.
-    """
-    node_numbers = None
-
-    def get_node_numbers():
-        nonlocal node_numbers
-        if node_numbers is None:
-            df = pd.read_csv(filepath)
-            node_numbers = df["Node Number"].unique()
-        return node_numbers
-
-    return get_node_numbers
-get_node_numbers = node_numbers_cache("data/Data2/One_train_1st_track/Bigger_train/Summer/ip_1and3track_3_arc_78910/Results1/DirectionalDeformation_X_axis.csv")
-
 def add_node_locations(df):
     """
     Adds X, Y, Z coordinates to a stress dataframe based on Node Number.
@@ -79,9 +56,9 @@ def add_node_locations(df):
                               how='left')
 
     # Check if any nodes failed to find a coordinate
-    missing_count = df_with_coords['X'].isna().sum()
-    if missing_count > 0:
-        print(f"Warning: {missing_count} nodes did not have matching coordinates.")
+    # missing_count = df_with_coords['X'].isna().sum()
+    # if missing_count > 0:
+        # print(f"Warning: {missing_count} nodes did not have matching coordinates.")
 
     return df_with_coords
 
@@ -92,48 +69,65 @@ def read_data_file(
     season: int = 0,
     region: int = 0,
     variable: int = 0,
+    filter_out_invalid_nodes: bool = True,
 ):
-  """Reads data according to format and provides the data-frame as-is, with
-  the categorical variables added as columns."""
+    """Reads data according to format and provides the data-frame as-is, with
+    the categorical variables added as columns."""
 
-  # Construct filename from scenario according to the folder structure
+    print("Reading file:", combination_to_string((train_config, load, season, region, variable)))
 
-  results_paths = ["Results", "Results1"]
-  base_path = Path("data/Data2")
+    # Construct filename from scenario according to the folder structure
 
-  for results_path in results_paths:
-      filename = base_path
-      filename /= TRAIN_CONFIGS[train_config]
-      filename /= LOADS[load]
-      filename /= SEASONS[season]
-      filename /= REGIONS[region]
-      filename /= results_path
-      filename /= VARIABLES[variable] + ".csv"
+    results_paths = ["Results", "Results1"]
+    base_path = Path("data/Data2")
 
-      if filename.exists():
-          break
-  else:
-      raise FileNotFoundError(f"Data file not found for combination: {combination_to_string((train_config, load, season, region, variable))}")
+    for results_path in results_paths:
+        filename = base_path
+        filename /= TRAIN_CONFIGS[train_config]
+        filename /= LOADS[load]
+        filename /= SEASONS[season]
+        filename /= REGIONS[region]
+        filename /= results_path
+        filename /= VARIABLES[variable] + ".csv"
 
-  # Encode the scenario as categorical columns
-  #   -> TODO: Is there a way of encoding that
-  #   preserves information? E.g. like encoding the name of a city as its latitude
-  df = pd.read_csv(filename)
-  num_nodes = len(df)
-  df["season"] = season*np.ones(num_nodes,dtype=np.uint8)
-  df["region"] = region*np.ones(num_nodes,dtype=np.uint8)
-  healthy = 1 if region == 0 else 0
-  df["health"] = healthy*np.ones(num_nodes,dtype=np.uint8)
-  df["load"] = load*np.ones(num_nodes,dtype=np.uint8)
-  df["train_config"] = train_config*np.ones(num_nodes,dtype=np.uint8)
+        if filename.exists():
+            break
+    else:
+        raise FileNotFoundError(f"Data file not found for combination: {combination_to_string((train_config, load, season, region, variable))}")
 
-  df = add_node_locations(df)
+    # Encode the scenario as categorical columns
+    #   -> TODO: Is there a way of encoding that
+    #   preserves information? E.g. like encoding the name of a city as its latitude
+    df = pd.read_csv(filename)
+    num_nodes = len(df)
+    df["season"] = season*np.ones(num_nodes,dtype=np.uint8)
+    df["region"] = region*np.ones(num_nodes,dtype=np.uint8)
+    healthy = 1 if region == 0 else 0
+    df["health"] = healthy*np.ones(num_nodes,dtype=np.uint8)
+    df["load"] = load*np.ones(num_nodes,dtype=np.uint8)
+    df["train_config"] = train_config*np.ones(num_nodes,dtype=np.uint8)
 
-  return df
+    df = add_node_locations(df)
+
+    # Identify nodes with missing coordinates
+    if filter_out_invalid_nodes:
+        
+        df = df[df["Node Number"].isin(VALID_NODE_NUMBERS)]
+
+        # Check that all nodes have coordinates and loads
+        missing_coords_nodes = df[df[["X", "Y", "Z"]].isnull().any(axis=1)]["Node Number"].unique()
+        if len(missing_coords_nodes) > 0:
+            raise ValueError(f"{len(missing_coords_nodes)} nodes are missing coordinates after filtering.")
+        missing_loads_nodes = df[df.isnull().any(axis=1)]["Node Number"].unique()
+        if len(missing_loads_nodes) > 0:
+            raise ValueError(f"{len(missing_loads_nodes)} nodes are missing load data after filtering.")
+
+    return df
 
 
 def get_data_variable_aggregated(
-    scenario_combination: tuple
+    scenario_combination: tuple,
+    filter_out_invalid_nodes: bool = True,
 ):
     """
     Reads all data files from one scenario of load, train_config, season, and region and takes all variables
@@ -153,12 +147,11 @@ def get_data_variable_aggregated(
     dfs_variables = []
     #  Merge data for all variables in the current health scenario
     for same_variable_combination in combinations_grouped_by_variable:
-        print("Processing combination:", combination_to_string(same_variable_combination))
 
         var_name = VARIABLE_NAMES[same_variable_combination[-1]]
 
         # Get data file for current combination
-        df = read_data_file(*same_variable_combination)
+        df = read_data_file(*same_variable_combination, filter_out_invalid_nodes=filter_out_invalid_nodes)
 
         # Turn the variable column into a single one and add a new time column
         df_melted = df.melt(
@@ -169,14 +162,11 @@ def get_data_variable_aggregated(
         df_melted["time"] = df_melted["variable"].str[-3:].astype(np.float64)
         df_melted.drop(columns=["variable"],inplace=True)
 
-        # Get node numbers and ensure they're consistent
-        NODE_NUMBERS = get_node_numbers()
-        try:
-            assert all(NODE_NUMBERS == df_melted["Node Number"].unique())
-        except ValueError or AssertionError:
-            print("WARNING: Node numbers differ between data files!")
-            print("Previous node numbers:", NODE_NUMBERS)
-            print("Current node numbers:", df_melted["Node Number"].unique())
+        # Check that data contains all valid node numbers
+        missing_nodes = set(VALID_NODE_NUMBERS) - set(df_melted["Node Number"].unique())
+        if len(missing_nodes) > 0 and filter_out_invalid_nodes:
+            raise ValueError(f"Data for variable {var_name} is missing node numbers: {missing_nodes}")
+        
         dfs_variables.append(df_melted)
 
     # Concatenating all variables into a single data frame
@@ -265,4 +255,21 @@ def get_data_all_aggregated():
     df_all = pd.concat(all_dfs, ignore_index=True)
     return df_all
 
+
+def select_df_subset(df, combination):
+    """Selects a subset of the main data-frame according to the given combination.
+
+    Args:
+        df (pd.DataFrame): The main data-frame containing all data.
+        combination (tuple): A tuple of (train_config, load, season, region, variable).
+    """
+    train_config, load, season, region, variable = combination
+    var_name = VARIABLE_NAMES[variable]
+    df_subset = df[
+        (df["train_config"] == train_config) &
+        (df["load"] == load) &
+        (df["season"] == season) &
+        (df["region"] == region)
+    ][["Node Number", "time", "health", var_name]]
+    return df_subset
 

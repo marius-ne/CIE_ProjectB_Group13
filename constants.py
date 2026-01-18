@@ -54,3 +54,9 @@ TRAIN_CONFIGS = {
     3: "Two_trains_extreme_track_same_direction",
 }
 VARIABLE_NAMES = list(VARIABLES.values())
+
+
+with open("valid_node_numbers.txt", "r") as f:
+    global VALID_NODE_NUMBERS
+    VALID_NODE_NUMBERS = {int(line.strip()) for line in f.readlines()}
+
