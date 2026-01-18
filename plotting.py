@@ -10,7 +10,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 # Own imports
 from constants import COORDS_DF
-from utils import select_df_subset, combination_to_string, VARIABLE_NAMES
+from utils import read_data_file, select_df_subset, combination_to_string, VARIABLE_NAMES
 
 
 def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: int=4):
@@ -78,6 +78,115 @@ def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: in
         )
     fig.write_html("visualization/bridge_structure_3d.html", auto_open=True)
     fig.show()
+
+
+def plot_bridge_3d_variable_over_time_df(df, var_name, s: int = 4, log_scale: bool = False):
+    """
+    Visualizes a given variable for all nodes over all time steps in 3D using Plotly.
+    Adds a slider to select the time step instead of playback animation.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing the data to plot.
+        var_name (str): Name of the column to visualize.
+        s (int): Marker size.
+        log_scale (bool): If True, apply log10 to the variable values for color mapping.
+    """
+
+    time_points = np.sort(df["time"].unique())
+
+    def get_node_vals(df_t):
+        vals = [
+            df_t[df_t["Node Number"] == nn][var_name].values[0]
+            if nn in df_t["Node Number"].values else np.nan
+            for nn in COORDS_DF["Node Number"]
+        ]
+        if log_scale:
+            vals = [np.log10(val) if not np.isnan(val) and val > 0 else np.nan for val in vals]
+        return vals
+
+    frames = []
+    for i, t in enumerate(time_points):
+        df_t = df[df["time"] == t]
+        node_vals = get_node_vals(df_t)
+        hover_text = [
+            f"Node: {nn}<br>{var_name}: {val:.3f}" if not np.isnan(val) else f"Node: {nn}<br>{var_name}: NaN"
+            for nn, val in zip(COORDS_DF["Node Number"], node_vals)
+        ]
+        frames.append(go.Frame(
+            data=[go.Scatter3d(
+                x=COORDS_DF["X"],
+                y=COORDS_DF["Y"],
+                z=COORDS_DF["Z"],
+                mode='markers',
+                marker=dict(
+                    size=s,
+                    color=node_vals,
+                    colorscale='Viridis',
+                    colorbar=dict(title=f"log10({var_name})" if log_scale else var_name),
+                    showscale=True,
+                ),
+                text=hover_text,
+                hoverinfo='text'
+            )],
+            name=str(i),
+            layout=go.Layout(title_text=f"{var_name} at time {t:.2f}" + (" (log scale)" if log_scale else ""))
+        ))
+
+    # Initial frame
+    df0 = df[df["time"] == time_points[0]]
+    node_vals0 = get_node_vals(df0)
+    hover_text0 = [
+        f"Node: {nn}<br>{var_name}: {val:.3f}" if not np.isnan(val) else f"Node: {nn}<br>{var_name}: NaN"
+        for nn, val in zip(COORDS_DF["Node Number"], node_vals0)
+    ]
+
+    steps = []
+    for i, t in enumerate(time_points):
+        step = dict(
+            method="animate",
+            args=[[str(i)], {"mode": "immediate", "frame": {"duration": 0, "redraw": True}, "transition": {"duration": 0}}],
+            label=f"{t:.2f}"
+        )
+        steps.append(step)
+
+    sliders = [dict(
+        active=0,
+        currentvalue={"prefix": "Time: "},
+        pad={"t": 50},
+        steps=steps
+    )]
+
+    fig = go.Figure(
+        data=[go.Scatter3d(
+            x=COORDS_DF["X"],
+            y=COORDS_DF["Y"],
+            z=COORDS_DF["Z"],
+            mode='markers',
+            marker=dict(
+                size=s,
+                color=node_vals0,
+                colorscale='Viridis',
+                colorbar=dict(title=f"log10({var_name})" if log_scale else var_name),
+                showscale=True,
+            ),
+            text=hover_text0,
+            hoverinfo='text'
+        )],
+        layout=go.Layout(
+            title=f"{var_name} for all nodes over time" + (" (log scale)" if log_scale else ""),
+            scene=dict(
+                xaxis_title='X [m]',
+                yaxis_title='Y [m]',
+                zaxis_title='Z [m]'
+            ),
+            sliders=sliders
+        ),
+        frames=frames
+    )
+
+    fig.write_html("visualization/bridge_3d_variable_over_time.html", auto_open=True)
+    fig.show()
+
 
 def plot_bridge_3d_load(combination, time_point):
     """

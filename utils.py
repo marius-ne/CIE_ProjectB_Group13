@@ -70,6 +70,7 @@ def read_data_file(
     region: int = 0,
     variable: int = 0,
     filter_out_invalid_nodes: bool = True,
+    melt_time: bool = True,
 ):
     """Reads data according to format and provides the data-frame as-is, with
     the categorical variables added as columns."""
@@ -128,7 +129,67 @@ def read_data_file(
         if len(missing_loads_nodes) > 0:
             raise ValueError(f"{len(missing_loads_nodes)} nodes are missing load data after filtering.")
 
+    # Melt time columns into a single column
+    if melt_time:
+        var_name = VARIABLE_NAMES[variable]
+
+        # Turn the variable column into a single one and add a new time column
+        df_melted = df.melt(
+            id_vars=["Node Number","season","load","region","health","train_config","X","Y","Z",],
+            var_name="variable",
+            value_name=var_name
+        )
+        # Check that variable name matches original variable names
+        assert all(df_melted["variable"].str[:-4] == ORIGINAL_VARIABLES[variable])
+
+        # Extract time-stamp from variable name
+        df_melted["time"] = df_melted["variable"].str[-3:].astype(np.float64)
+        df_melted.drop(columns=["variable"],inplace=True)
+
+        # Check that data contains all valid node numbers
+        missing_nodes = set(VALID_NODE_NUMBERS) - set(df_melted["Node Number"].unique())
+        if len(missing_nodes) > 0 and filter_out_invalid_nodes:
+            raise ValueError(f"Data for variable {var_name} is missing node numbers: {missing_nodes}")
+
+        df = df_melted
+
     return df
+
+
+def get_variable_difference_between_combinations(comb1, comb2, filter_out_invalid_nodes=True):
+    """
+    Computes the difference in the variable between two combinations.
+    Args:
+        comb1, comb2 (tuple): Each a (train_config, load, season, region, variable).
+    Returns:
+        pd.DataFrame: DataFrame with Node Number, time, X, Y, Z, and the difference in the variable.
+    """
+    # Ensure both combinations refer to the same variable
+    if comb1[-1] != comb2[-1]:
+        raise ValueError("Both combinations must refer to the same variable.")
+
+    var_name = VARIABLE_NAMES[comb1[-1]]
+
+    df1 = read_data_file(*comb1, filter_out_invalid_nodes=filter_out_invalid_nodes)
+    df2 = read_data_file(*comb2, filter_out_invalid_nodes=filter_out_invalid_nodes)
+
+    # Keep only relevant columns
+    keep_cols = ["Node Number", "time", "X", "Y", "Z", var_name]
+    df1 = df1[keep_cols]
+    df2 = df2[keep_cols]
+
+    # Check node numbers and time for consistency
+    merge_cols = ["Node Number", "time", "X", "Y", "Z"]
+    merged = pd.merge(df1, df2, on=merge_cols, suffixes=('_1', '_2'), how='inner')
+
+    # Compute difference
+    merged[var_name] = merged[f"{var_name}_1"] - merged[f"{var_name}_2"]
+
+    # Select relevant columns
+    result_cols = merge_cols + [var_name]
+    result = merged[result_cols]
+
+    return result
 
 
 def get_data_variable_aggregated(
@@ -154,30 +215,10 @@ def get_data_variable_aggregated(
     #  Merge data for all variables in the current health scenario
     for same_variable_combination in combinations_grouped_by_variable:
 
-        var_name = VARIABLE_NAMES[same_variable_combination[-1]]
-
         # Get data file for current combination
         df = read_data_file(*same_variable_combination, filter_out_invalid_nodes=filter_out_invalid_nodes)
 
-        # Turn the variable column into a single one and add a new time column
-        df_melted = df.melt(
-            id_vars=["Node Number","season","load","region","health","train_config","X","Y","Z",],
-            var_name="variable",
-            value_name=var_name
-        )
-        # Check that variable name matches original variable names
-        assert all(df_melted["variable"].str[:-4] == ORIGINAL_VARIABLES[same_variable_combination[-1]])
-
-        # Extract time-stamp from variable name
-        df_melted["time"] = df_melted["variable"].str[-3:].astype(np.float64)
-        df_melted.drop(columns=["variable"],inplace=True)
-
-        # Check that data contains all valid node numbers
-        missing_nodes = set(VALID_NODE_NUMBERS) - set(df_melted["Node Number"].unique())
-        if len(missing_nodes) > 0 and filter_out_invalid_nodes:
-            raise ValueError(f"Data for variable {var_name} is missing node numbers: {missing_nodes}")
-        
-        dfs_variables.append(df_melted)
+        dfs_variables.append(df)
 
     # Concatenating all variables into a single data frame
     # -> we do an OUTER join, meaning all keys are kept (A U B)
