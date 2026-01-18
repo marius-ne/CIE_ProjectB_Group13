@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
-from constants import TRAIN_CONFIGS, LOADS, SEASONS, REGIONS, VARIABLES, VARIABLE_NAMES, VALID_NODE_NUMBERS
+from constants import *
 
 
 def combination_to_string(combination):
@@ -114,6 +114,12 @@ def read_data_file(
         
         df = df[df["Node Number"].isin(VALID_NODE_NUMBERS)]
 
+        # Put stress to 0
+        # Identify nodes with missing stress values
+        stress_variables = list(ORIGINAL_VARIABLES.values())[4:] 
+        stress_cols = [col for col in df.columns if any(var in col for var in stress_variables)]
+        df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols] = df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols].fillna(0)
+
         # Check that all nodes have coordinates and loads
         missing_coords_nodes = df[df[["X", "Y", "Z"]].isnull().any(axis=1)]["Node Number"].unique()
         if len(missing_coords_nodes) > 0:
@@ -159,6 +165,10 @@ def get_data_variable_aggregated(
             var_name="variable",
             value_name=var_name
         )
+        # Check that variable name matches original variable names
+        assert all(df_melted["variable"].str[:-4] == ORIGINAL_VARIABLES[same_variable_combination[-1]])
+
+        # Extract time-stamp from variable name
         df_melted["time"] = df_melted["variable"].str[-3:].astype(np.float64)
         df_melted.drop(columns=["variable"],inplace=True)
 

@@ -29,7 +29,17 @@ VARIABLES = {
       5: "ShearStress_XY",
       6: "ShearStress_XZ",
       7: "ShearStress_YZ",
-  }
+}
+ORIGINAL_VARIABLES = {
+    0: "Total Deformation (mm)",
+    1: "X_axis (mm)",
+    2: "Y_axis (mm)",
+    3: "Z_axis (mm)",
+    4: "Equivalent Stress (Pa)",
+    5: "Shear Stress XY (Pa)",
+    6: "Shear Stress XZ (Pa)",
+    7: "Shear Stress YZ (Pa)",
+}
 LOADS = {
     0: "Bigger_train",
     1: "Smaller_train",
@@ -56,10 +66,18 @@ TRAIN_CONFIGS = {
 VARIABLE_NAMES = list(VARIABLES.values())
 
 
-with open("valid_node_numbers.txt", "r") as f:
-    global VALID_NODE_NUMBERS
-    VALID_NODE_NUMBERS = {int(line.strip()) for line in f.readlines()}
 
 with open("all_node_numbers.txt", "r") as f:
     global NODE_NUMBERS
     NODE_NUMBERS = [int(line.strip()) for line in f.readlines()]
+
+# Valid: have deformation and coordinates (not necessarily stress)
+with open("nodes_missing_deformation.txt", "r") as f:
+    global VALID_NODE_NUMBERS, NODES_MISSING_DEFORMATION
+    NODES_MISSING_DEFORMATION = {int(line.strip()) for line in f.readlines()}
+    VALID_NODE_NUMBERS = [nn for nn in NODE_NUMBERS if nn not in NODES_MISSING_DEFORMATION]
+
+with open("nodes_missing_stress.txt", "r") as f:
+    global NODES_MISSING_STRESS
+    NODES_MISSING_STRESS = {int(line.strip()) for line in f.readlines()}
+
