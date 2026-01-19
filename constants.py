@@ -49,13 +49,13 @@ SEASONS = {
     1: "Winter",
 }
 REGIONS = {
-    0: "Perfect_structure",
-    1: "ip_frst_Arc_defect_all_tracks_111",
-    2: "ip_1and3track_3_arc_78910",
-    3: "ip_first_track_3arc_78910",
-    4: "Ip_1track_1_arc_345",
-    5: "ip_3track_1_arc_678",
-    6: "ip_2_arc_all_tracks_222",
+    0: "Perfect_structure",                 # Healthy
+    1: "ip_frst_Arc_defect_all_tracks_111", # Arc1, Track1-3
+    2: "ip_1and3track_3_arc_78910",         # Arc3, Track1&3
+    3: "ip_first_track_3arc_78910",         # Arc3, Track1 
+    4: "Ip_1track_1_arc_345",               # Arc1, Track1
+    5: "ip_3track_1_arc_678",               # Arc1, Track3
+    6: "ip_2_arc_all_tracks_222",           # Arc2, Track1-3
 }
 TRAIN_CONFIGS = {
     0: "One_train_1st_track",

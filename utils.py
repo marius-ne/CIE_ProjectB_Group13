@@ -11,6 +11,20 @@ def combination_to_string(combination):
     train_config, load, season, region, variable = combination
     return f"{TRAIN_CONFIGS[train_config]}__{LOADS[load]}__{SEASONS[season]}__{REGIONS[region]}__{VARIABLE_NAMES[variable]}"
 
+def combination_to_scenario_number(combination):
+    """
+    Encodes a combination of (train_config, load, season, region, variable)
+    into a unique scenario number using mixed radix encoding.
+    The variable is ignored.
+    Returns:
+        int: Unique scenario number.
+    """
+    train_config, load, season, region, variable = combination
+    scenario_number = (
+        (((train_config * len(LOADS) + load) * len(SEASONS) + season) * len(REGIONS) + region) 
+    )
+    return scenario_number
+
 # Construct list of scenarios (combinations of train configs, loads, seasons, healths, variables)
 #   Each scenario is a tuple of (train_config, load, season, health, variable), each encoded
 #   as the corresponding key in the dictionaries above
@@ -75,7 +89,8 @@ def read_data_file(
     """Reads data according to format and provides the data-frame as-is, with
     the categorical variables added as columns."""
 
-    print("Reading file:", combination_to_string((train_config, load, season, region, variable)))
+    combination = (train_config, load, season, region, variable)
+    print("Reading file:", combination_to_string(combination))
 
     # Construct filename from scenario according to the folder structure
     results_paths = ["Results", "Results1"]
@@ -93,11 +108,11 @@ def read_data_file(
         if filename.exists():
             break
     else:
-        raise FileNotFoundError(f"Data file not found for combination: {combination_to_string((train_config, load, season, region, variable))}")
+        raise FileNotFoundError(f"Data file not found for combination: {combination_to_string(combination)}")
 
 
     # Construct the expected filename string for comparison
-    expected_filename_str = combination_to_string((train_config, load, season, region, variable)) + ".csv"
+    expected_filename_str = combination_to_string(combination) + ".csv"
 
     # Build the actual filename string from the path components
     actual_filename_str = VARIABLES[variable] + ".csv"
@@ -109,9 +124,7 @@ def read_data_file(
 
     # Create a unique scenario number from the combination using mixed radix encoding
     # Each category uses only as many digits as needed for its range
-    scenario_number = (
-        (((train_config * len(LOADS) + load) * len(SEASONS) + season) * len(REGIONS) + region) 
-    )
+    scenario_number = combination_to_scenario_number(combination)
         
     # Encode the scenario as categorical columns
     #   -> TODO: Is there a way of encoding that
@@ -175,7 +188,7 @@ def read_data_file(
     return df
 
 
-def get_variable_difference_between_combinations(comb1, comb2, filter_out_invalid_nodes=True):
+def get_variable_difference_between_combinations(comb1: tuple, comb2: tuple, top_pct: float = 1.0):
     """
     Computes the difference in the variable between two combinations.
     Args:
@@ -189,8 +202,32 @@ def get_variable_difference_between_combinations(comb1, comb2, filter_out_invali
 
     var_name = VARIABLE_NAMES[comb1[-1]]
 
-    df1 = read_data_file(*comb1, filter_out_invalid_nodes=filter_out_invalid_nodes)
-    df2 = read_data_file(*comb2, filter_out_invalid_nodes=filter_out_invalid_nodes)
+    # df1 = read_data_file(*comb1, filter_out_invalid_nodes=filter_out_invalid_nodes)
+    # df2 = read_data_file(*comb2, filter_out_invalid_nodes=filter_out_invalid_nodes)
+    
+    # NOTE: We now get the aggregated data instead to get rid of the invalid deformations
+    df_agg1 = get_data_variable_aggregated(comb1[:-1])
+    df_agg2 = get_data_variable_aggregated(comb2[:-1])
+
+    df1 = select_df_subset(df_agg1, combination_to_scenario_number(comb1))
+    df2 = select_df_subset(df_agg2, combination_to_scenario_number(comb2))
+
+    return get_variable_difference_between_dataframes(df1, df2, var_name, top_pct=top_pct)
+
+
+def get_variable_difference_between_dataframes(df1, df2, var_name: str, top_pct: float = 1.0):
+    """
+    Computes the difference in the variable between two data_frames.
+    Args:
+        df1, df2 (pd.DataFrame): Each a data-frame containing the same variable.
+        top_pct (float): If <1.0, keep only the top percentage of differences by absolute value.
+                         If >1.0, keep only the top N nodes by absolute difference.
+    Returns:
+        pd.DataFrame: DataFrame with Node Number, time, X, Y, Z, and the difference in the variable.
+    """
+    # Ensure both dataframes have the same columns
+    if set(df1.columns) != set(df2.columns):
+        raise ValueError(f"DataFrames have different columns: {set(df1.columns) ^ set(df2.columns)}")
 
     # Keep only relevant columns
     keep_cols = ["Node Number", "time", "X", "Y", "Z", var_name]
@@ -207,11 +244,36 @@ def get_variable_difference_between_combinations(comb1, comb2, filter_out_invali
 
     merged[var_name] = merged[f"{var_name}_1"] - merged[f"{var_name}_2"]
 
-    # Select relevant columns
-    result_cols = merge_cols + [var_name]
-    result = merged[result_cols]
+    # Keep only the top_pct number of top nodes by absolute difference
+    abs_diff = np.abs(merged[var_name])
+    # Only consider indices where the difference is non-zero
+    # NOTE adjust r_tol, currently 10%
+    # Mask out values close to zero for threshold calculation, but keep original indices for assignment
+    abs_diff_mask = ~np.isclose(0, abs_diff, rtol=1e-1, atol=0)
+    abs_diff_nonzero = abs_diff[abs_diff_mask]
+    
+    if len(abs_diff_nonzero) == 0:
+        # If there are no non-zero differences, return an empty DataFrame
+        # with the same columns and dtypes as `merged`
+        merged[var_name] = np.nan
+        return merged
 
-    return result
+    if top_pct < 1.0:
+        # Keep only the top percentage of differences by absolute value
+        threshold = np.percentile(abs_diff_nonzero, 100 * (1 - top_pct))
+        # Set values below the threshold to null instead of filtering them out
+        merged.loc[abs_diff < threshold, var_name] = np.nan
+    elif top_pct > 1.0:
+        # Get indices of top_pct largest differences (by value, not index)
+        top_indices = abs_diff_nonzero.sort_values(ascending=False).head(int(top_pct)).index
+        # Set all other values to NaN
+        merged.loc[~merged.index.isin(top_indices), var_name] = np.nan
+
+    # Select relevant columns
+    # result_cols = merge_cols + [var_name]
+    # result = merged[result_cols]
+
+    return merged
 
 
 def get_data_variable_aggregated(
@@ -403,21 +465,14 @@ def get_data_all_aggregated():
     return df_all
 
 
-def select_df_subset(df, combination):
+def select_df_subset(df, scenario_number):
     """Selects a subset of the main data-frame according to the given combination.
 
     Args:
         df (pd.DataFrame): The main data-frame containing all data.
-        combination (tuple): A tuple of (train_config, load, season, region, variable).
+        scenario_number (int): The unique scenario number.
     """
-    train_config, load, season, region, variable = combination
-    var_name = VARIABLE_NAMES[variable]
-    df_subset = df[
-        (df["train_config"] == train_config) &
-        (df["load"] == load) &
-        (df["season"] == season) &
-        (df["region"] == region)
-    ][["Node Number", "time", "health", var_name]]
+    df_subset = df[df["scenario"] == scenario_number]
     return df_subset
 
 

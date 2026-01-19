@@ -126,7 +126,7 @@ def plot_bridge_3d_variable_over_time_df(df, var_name, s: int = 4, log_scale: bo
         df_t = df[df["time"] == t]
         node_vals = get_node_vals(df_t)
         hover_text = [
-            f"Node: {nn}<br>{var_name}: {val:.3f}" if not np.isnan(val) else f"Node: {nn}<br>{var_name}: NaN"
+            f"Node: {nn}<br>{var_name}: {val:.3e}" if not np.isnan(val) else f"Node: {nn}<br>{var_name}: NaN"
             for nn, val in zip(COORDS_DF["Node Number"], node_vals)
         ]
         frames.append(go.Frame(

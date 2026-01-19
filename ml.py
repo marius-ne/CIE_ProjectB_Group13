@@ -6,7 +6,8 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 # Own imports
-from utils import reshape_multi_variable_to_wide
+from constants import *
+from utils import *
 
 
 def standardize(X_raw):
@@ -103,3 +104,36 @@ def apply_bridge_pca(df, n_components=10):
     return X_pca, y, pca, scaler
 
 
+def get_delta_nodes(top_pct: float = 0.01):
+    """
+    Obtain delta nodes for all scenarios, damage levels, and variables.
+    Returns:
+        delta_nodes: A dictionary with keys as (train_config, load, season, damage, variable)
+                     and values as arrays of delta node numbers.
+        diffs: A dictionary with keys as (train_config, load, season, damage, variable)
+               and values as DataFrames containing the differences.
+    """
+    diffs = {}
+    delta_nodes = {}
+    # Iterate over all (train_config, load, season) combinations - "scenarios"
+    for combo in combinations_grouped_by_region:
+        scenario = combo[0][0][:3]
+        df_healthy = get_data_variable_aggregated((*scenario, 0))
+
+        # Iterate over damage levels for the given scenario
+        for damage in range(1, 7):
+            df_damaged = get_data_variable_aggregated((*scenario, damage))
+
+            # Check delta for each variable between the healthy and the current damaged state
+            for variable in range(8):
+                var_name = VARIABLE_NAMES[variable]
+                df_diff = get_variable_difference_between_dataframes(
+                    df_healthy, df_damaged, var_name=var_name, top_pct=top_pct
+                )
+                # Delta nodes: those where the difference is not NaN
+                delta_nodes[(*scenario, damage, variable)] = df_diff[~df_diff[var_name].isna()]["Node Number"].unique()
+                diffs[(*scenario, damage, variable)] = df_diff
+        print(f"There are {len(set(np.concatenate(list(delta_nodes.values()))))} delta nodes for scenario {scenario} and variable {variable}")
+        print(f"Delta nodes for {scenario}: {[f'{i+1}:{len(dn)}' for i, dn in enumerate(delta_nodes.values())]}")
+
+    return delta_nodes, diffs
