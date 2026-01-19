@@ -279,4 +279,32 @@ def plot_bridge_loads_3d_slider(df, combination):
         )
     )
     
+
+def plot_node_variation_across_scenarios(df, node_number, variable="TotalDeformation"):
+    """
+    Plot the variation of a variable for a given node across all scenarios and time steps.
+
+    Args:
+        node_number (int): Node number to plot.
+        variable (str): Variable/column name to plot (default: "TotalDeformation").
+    """
+
+    # Filter for the node
+    node_df = df[df["Node Number"] == node_number]
+
+    # Sort by scenario and time for consistent plotting
+    node_df = node_df.sort_values(["scenario", "time"])
+
+    # Pivot for heatmap: rows=scenario, cols=time, values=variable
+    pivot = node_df.pivot(index="scenario", columns="time", values=variable)
+
+    plt.figure(figsize=(10, 6))
+    plt.title(f"Variation of {variable} for Node {node_number} across scenarios and time")
+    plt.xlabel("Time")
+    plt.ylabel("Scenario")
+    im = plt.imshow(pivot, aspect="auto", cmap="viridis", interpolation="nearest",
+                    extent=[pivot.columns.min(), pivot.columns.max(), pivot.index.max(), pivot.index.min()])
+    plt.colorbar(im, label=variable)
+    plt.show()
+
     

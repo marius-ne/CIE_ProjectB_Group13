@@ -78,7 +78,6 @@ def read_data_file(
     print("Reading file:", combination_to_string((train_config, load, season, region, variable)))
 
     # Construct filename from scenario according to the folder structure
-
     results_paths = ["Results", "Results1"]
     base_path = Path("data/Data2")
 
@@ -96,17 +95,36 @@ def read_data_file(
     else:
         raise FileNotFoundError(f"Data file not found for combination: {combination_to_string((train_config, load, season, region, variable))}")
 
+
+    # Construct the expected filename string for comparison
+    expected_filename_str = combination_to_string((train_config, load, season, region, variable)) + ".csv"
+
+    # Build the actual filename string from the path components
+    actual_filename_str = VARIABLES[variable] + ".csv"
+
+    # Check that the constructed string matches the filename
+    if expected_filename_str.split("__")[-1] != actual_filename_str:
+        raise ValueError(f"Variable name mismatch: expected {expected_filename_str}, got {actual_filename_str}")
+
+
+    # Create a unique scenario number from the combination using mixed radix encoding
+    # Each category uses only as many digits as needed for its range
+    scenario_number = (
+        (((train_config * len(LOADS) + load) * len(SEASONS) + season) * len(REGIONS) + region) 
+    )
+        
     # Encode the scenario as categorical columns
     #   -> TODO: Is there a way of encoding that
     #   preserves information? E.g. like encoding the name of a city as its latitude
     df = pd.read_csv(filename)
     num_nodes = len(df)
-    df["season"] = season*np.ones(num_nodes,dtype=np.uint8)
-    df["region"] = region*np.ones(num_nodes,dtype=np.uint8)
     healthy = 1 if region == 0 else 0
     df["health"] = healthy*np.ones(num_nodes,dtype=np.uint8)
-    df["load"] = load*np.ones(num_nodes,dtype=np.uint8)
-    df["train_config"] = train_config*np.ones(num_nodes,dtype=np.uint8)
+    df["scenario"] = scenario_number*np.ones(num_nodes,dtype=np.uint32)
+    # df["season"] = season*np.ones(num_nodes,dtype=np.uint8)
+    # df["region"] = region*np.ones(num_nodes,dtype=np.uint8)
+    # df["load"] = load*np.ones(num_nodes,dtype=np.uint8)
+    # df["train_config"] = train_config*np.ones(num_nodes,dtype=np.uint8)
 
     df = add_node_locations(df)
 
@@ -119,7 +137,8 @@ def read_data_file(
         # Identify nodes with missing stress values
         stress_variables = list(ORIGINAL_VARIABLES.values())[4:] 
         stress_cols = [col for col in df.columns if any(var in col for var in stress_variables)]
-        df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols] = df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols].fillna(0)
+        df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols] = \
+            df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols].fillna(0)
 
         # Check that all nodes have coordinates and loads
         missing_coords_nodes = df[df[["X", "Y", "Z"]].isnull().any(axis=1)]["Node Number"].unique()
@@ -135,7 +154,7 @@ def read_data_file(
 
         # Turn the variable column into a single one and add a new time column
         df_melted = df.melt(
-            id_vars=["Node Number","season","load","region","health","train_config","X","Y","Z",],
+            id_vars=["Node Number","health","scenario","X","Y","Z",],
             var_name="variable",
             value_name=var_name
         )
@@ -226,7 +245,7 @@ def get_data_variable_aggregated(
     # Concatenating all variables into a single data frame
     # -> we do an OUTER join, meaning all keys are kept (A U B)
     #   this should be safe, node numbers and the other shared columns are kept
-    shared_cols = ["Node Number","train_config","load","season","region","health","X","Y","Z","time"]
+    shared_cols = ["Node Number","health","scenario","X","Y","Z","time"]
     df_vars = functools.reduce(lambda left,right: pd.merge(left,right,on=shared_cols,
                                               how='outer'), dfs_variables)
     # Check that data has been preserved
@@ -305,6 +324,37 @@ def get_data_variable_and_region_and_season_aggregated(
     return df_all
 
 
+def get_data_variable_and_region_and_season_and_load_aggregated(
+    scenario_combination: tuple
+):
+    """
+    Reads all data files from one scenario of train_config and aggregates across all loads, seasons, regions, and variables.
+
+    Args:
+        scenario_combination (tuple): A tuple of (train_config,) representing
+            the scenario for which to aggregate data across all loads, seasons, regions, and variables.
+    Returns:
+        pd.DataFrame: Merged data-frame with all variables as columns for all loads, seasons, and regions.
+    """
+    train_config = scenario_combination[0]
+    all_dfs = []
+    for load in LOADS.keys():
+        for season in SEASONS.keys():
+            for region in REGIONS.keys():
+                try:
+                    df = get_data_variable_aggregated((train_config, load, season, region))
+                    all_dfs.append(df)
+                except FileNotFoundError:
+                    print(f"Skipping missing file for scenario: {combination_to_string((train_config, load, season, region, 0))}")
+                    continue
+
+    if not all_dfs:
+        raise RuntimeError("No data files found for any load/season/region in this scenario.")
+
+    df_all = pd.concat(all_dfs, ignore_index=True)
+    return df_all
+
+
 def get_data_all_aggregated():
     """
     Reads all data files for all combinations of season, load, train_config, health, and variable,
@@ -350,46 +400,11 @@ def select_df_subset(df, combination):
     ][["Node Number", "time", "health", var_name]]
     return df_subset
 
-def reshape_long_to_pca_ready(df, value_col='EquivalentStress'):
-    """
-    Transforms a long-format dataframe into a wide-format matrix for PCA.
-    
-    Input: df with columns [Node Number, health, time, load, season, train_config, EquivalentStress]
-    Output: df with rows as (Scenario + Time) and columns as Node Numbers.
-    """
-    
-    # 1. Define the columns that uniquely identify a "Bridge State" (The Row Index)
-    # These columns represent the metadata for each sample.
-    index_columns = ['health', 'region', 'load', 'season', 'train_config', 'time']
-    
-    # Ensure only columns that exist in the dataframe are used
-    index_columns = [col for col in index_columns if col in df.columns]
-    
-    # 2. Pivot the data
-    # index: becomes the rows
-    # columns: 'Node Number' creates one column per node (N columns)
-    # values: the actual stress value at that node
-    df_wide = df.pivot_table(
-        index=index_columns, 
-        columns='Node Number', 
-        values=value_col
-    )
-    
-    # 3. Clean up
-    # Resetting the index turns health/time back into normal columns for the classifier
-    df_wide = df_wide.reset_index()
-    
-    print(f"Reshaping complete.")
-    print(f"Number of Samples (Rows): {df_wide.shape[0]}")
-    print(f"Number of Nodes (Features): {df_wide.shape[1] - len(index_columns)}")
-    
-    return df_wide
 
-
-def reshape_multi_variable_to_pca(df, value_cols=None, one_hot_encoded=False):
+def reshape_multi_variable_to_wide(df, value_cols=None):
     """
     Reshapes long-format data with multiple variables into a wide 
-    format suitable for PCA.
+    format suitable for training or PCA.
     
     Args:
         df: Long-format dataframe with metadata and multiple physical variables.
@@ -413,13 +428,7 @@ def reshape_multi_variable_to_pca(df, value_cols=None, one_hot_encoded=False):
     value_cols = [col for col in value_cols if col in df.columns]
     
     # 2. Metadata columns that define a "sample" (the row identity)
-    if one_hot_encoded:
-        metadata_cols = ['health', 'region_0', 'region_1', 'region_2', 'region_3', 'region_4', 'region_5',
-                         'load_0', 'load_1', 'season_0', 'season_1',
-                         'train_config_0', 'train_config_1', 'train_config_2', 'train_config_3',
-                         'time']
-    else:   
-        metadata_cols = ['health', 'load', 'season', 'train_config', 'time', 'region']
+    metadata_cols = ['health', 'time', 'scenario']
     metadata_cols = [col for col in metadata_cols if col in df.columns]
     
     print(f"Processing {len(value_cols)} variables across {df['Node Number'].nunique()} nodes...")

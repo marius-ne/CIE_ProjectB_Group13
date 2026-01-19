@@ -6,7 +6,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 # Own imports
-from utils import reshape_long_to_pca_ready, reshape_multi_variable_to_pca
+from utils import reshape_multi_variable_to_wide
 
 
 def standardize(X_raw):
@@ -55,7 +55,7 @@ def extract_modal_features(df_scenario, n_modes=5):
 
 
 
-def apply_bridge_pca(df, n_components=10, one_hot_encoded: bool = False):
+def apply_bridge_pca(df, n_components=10):
     """
     Transforms the long-format bridge data into a reduced PCA feature set.
     
@@ -70,17 +70,11 @@ def apply_bridge_pca(df, n_components=10, one_hot_encoded: bool = False):
     # 1. Pivot the data so each row is a unique bridge state (Scenario)
     # and each column is the stress at a specific Node Number
     # Note: If you have multiple time steps, this will flatten them into features
-    df_pivot = reshape_multi_variable_to_pca(df, one_hot_encoded=one_hot_encoded)
+    df_pivot = reshape_multi_variable_to_wide(df)
     
     # 2. Separate the features (Stress values) from the labels
     # The stress values start after the index columns we defined above
-    if one_hot_encoded:
-        metadata_cols = ['health', 'region_0', 'region_1', 'region_2', 'region_3', 'region_4', 'region_5',
-                         'load_0', 'load_1', 'season_0', 'season_1',
-                         'train_config_0', 'train_config_1', 'train_config_2', 'train_config_3',
-                         'time']
-    else:
-        metadata_cols = ['health', 'region', 'load', 'season', 'train_config', 'time']
+    metadata_cols = ['health', 'scenario', 'time']
     metadata_cols = [col for col in df_pivot.columns if col in metadata_cols]
     X_raw = df_pivot.drop(columns=metadata_cols).values
     print(X_raw.shape)

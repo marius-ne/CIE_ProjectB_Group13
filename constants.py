@@ -69,6 +69,7 @@ INDICATORS = [
     "load",
     "season",
     "train_config",
+    "scenario"
 ]
 ONE_HOT_INDICATORS = [
     "health",
@@ -95,13 +96,19 @@ with open("all_node_numbers.txt", "r") as f:
     global NODE_NUMBERS
     NODE_NUMBERS = [int(line.strip()) for line in f.readlines()]
 
-# Valid: have deformation and coordinates (not necessarily stress)
-with open("nodes_missing_deformation.txt", "r") as f:
-    global VALID_NODE_NUMBERS, NODES_MISSING_DEFORMATION
-    NODES_MISSING_DEFORMATION = {int(line.strip()) for line in f.readlines()}
-    VALID_NODE_NUMBERS = [nn for nn in NODE_NUMBERS if nn not in NODES_MISSING_DEFORMATION]
-
 with open("nodes_missing_stress.txt", "r") as f:
     global NODES_MISSING_STRESS
     NODES_MISSING_STRESS = {int(line.strip()) for line in f.readlines()}
 
+with open("nodes_missing_coords.txt", "r") as f:
+    global NODES_MISSING_COORDS
+    NODES_MISSING_COORDS = {int(line.strip()) for line in f.readlines()}
+
+with open("nodes_missing_deformation.txt", "r") as f:
+    global NODES_MISSING_DEFORMATION
+    # NODES_MISSING_DEFORMATION = {int(line.strip()) for line in f.readlines()}
+    NODES_MISSING_DEFORMATION = {int(line.strip()) for line in f.readlines()}
+
+# Valid: have stress (and therefore coordinates and deformation)
+#   We are filtering out nodes all nodes missing stress (these have weird deformation values)
+VALID_NODE_NUMBERS = [nn for nn in NODE_NUMBERS if nn not in NODES_MISSING_STRESS]
