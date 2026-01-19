@@ -111,4 +111,8 @@ with open("nodes_missing_deformation.txt", "r") as f:
 
 # Valid: have stress (and therefore coordinates and deformation)
 #   We are filtering out nodes all nodes missing stress (these have weird deformation values)
-VALID_NODE_NUMBERS = [nn for nn in NODE_NUMBERS if nn not in NODES_MISSING_STRESS]
+VALID_NODE_NUMBERS = [nn for nn in NODE_NUMBERS if nn not in (NODES_MISSING_STRESS.union(NODES_MISSING_DEFORMATION))]
+
+with open("superset_outliers.txt", "r") as f:
+    global SUPERSET_OUTLIERS
+    SUPERSET_OUTLIERS = {int(line.strip()) for line in f.readlines()}

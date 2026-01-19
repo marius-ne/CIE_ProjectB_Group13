@@ -256,6 +256,26 @@ def get_data_variable_aggregated(
                             on=shared_cols, how='inner')
                   assert len(merged) == len(df)
 
+    # Filter out deformations where the total deformation is negative or
+    #   where the root of the sum of squares of the directional deformations is different
+    #   from the total deformation by a large margin
+    if filter_out_invalid_nodes and "TotalDeformation" in df_vars.columns:
+        valid_deformation_mask = (
+            (df_vars["TotalDeformation"] >= 0) &
+            (np.abs(
+                df_vars["TotalDeformation"] - np.sqrt(
+                    df_vars["DirectionalDeformation_X_axis"]**2 +
+                    df_vars["DirectionalDeformation_Y_axis"]**2 +
+                    df_vars["DirectionalDeformation_Z_axis"]**2
+                )
+            ) <= 1e-3)
+        )
+        # Set deformation of invalid nodes to 0 instead of filtering them out
+        df_vars.loc[~valid_deformation_mask, ["TotalDeformation",
+                              "DirectionalDeformation_X_axis",
+                              "DirectionalDeformation_Y_axis",
+                              "DirectionalDeformation_Z_axis"]] = 0
+
     # Re-order columns
     df_vars = df_vars[shared_cols + VARIABLE_NAMES]
 
@@ -399,6 +419,40 @@ def select_df_subset(df, combination):
         (df["region"] == region)
     ][["Node Number", "time", "health", var_name]]
     return df_subset
+
+
+def filter_outliers(df: pd.DataFrame, lower_pct=0.001, upper_pct=1):
+    """Filters out rows in the DataFrame where 'TotalDeformation' is outside the specified percentile range.
+    Args:
+        df (pd.DataFrame): The input DataFrame containing a 'TotalDeformation' column.
+        lower_pct (float): The lower percentile threshold (default is 0.001 for 0.1%).
+        upper_pct (float): The upper percentile threshold (default is 1 for no filtering).
+    Returns:
+        pd.DataFrame: The filtered DataFrame with outliers removed.
+        pd.Index: Index of outlier node numbers that were filtered out.
+    """
+
+    # Remove outlier nodes based on TotalDeformation (e.g., outside 1st and 99th percentiles)
+    lower, upper = df["TotalDeformation"].quantile([lower_pct, upper_pct])
+    df_no_outliers = df[
+        (df["TotalDeformation"] >= lower) &
+        (df["TotalDeformation"] <= upper)
+    ]
+    filtered_count = len(df) - len(df_no_outliers)
+    filtered_nodes = df[
+        (df["TotalDeformation"] < lower) | (df["TotalDeformation"] > upper)
+    ]
+    outliers = filtered_nodes['Node Number'].unique()
+
+    print(f"Filtered out {filtered_count} rows (nodes x time steps).")
+    print("Filtered values (min/max):")
+    print(filtered_nodes["TotalDeformation"].describe())
+    print(f"Lower threshold: {lower}, Upper threshold: {upper}")
+    print("Mean of remaining TotalDeformation:", df_no_outliers["TotalDeformation"].mean())
+    print(f"Outliers node numbers: {sorted(outliers.tolist())}")
+    print(f"Outliers values: {filtered_nodes['TotalDeformation'].unique()}")
+
+    return df_no_outliers, outliers
 
 
 def reshape_multi_variable_to_wide(df, value_cols=None):
