@@ -465,14 +465,16 @@ def get_data_all_aggregated():
     return df_all
 
 
-def select_df_subset(df, scenario_number):
-    """Selects a subset of the main data-frame according to the given combination.
+def select_df_subset(df, scenario_numbers):
+    """Selects a subset of the main data-frame according to the given scenario number(s).
 
     Args:
         df (pd.DataFrame): The main data-frame containing all data.
-        scenario_number (int): The unique scenario number.
+        scenario_numbers (int or list/array-like): One or more unique scenario numbers.
     """
-    df_subset = df[df["scenario"] == scenario_number]
+    if not isinstance(scenario_numbers, (list, tuple, set, np.ndarray)):
+        scenario_numbers = [scenario_numbers]
+    df_subset = df[df["scenario"].isin(scenario_numbers)]
     return df_subset
 
 

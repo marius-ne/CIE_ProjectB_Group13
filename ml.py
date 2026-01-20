@@ -1,9 +1,14 @@
 import pandas as pd
 import numpy as np
+import tensorflow as tf
 
 import sklearn
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+
+from tensorflow.keras import layers, models
+
+import matplotlib.pyplot as plt
 
 # Own imports
 from constants import *
@@ -137,3 +142,133 @@ def get_delta_nodes(top_pct: float = 0.01):
         print(f"Delta nodes for {scenario}: {[f'{i+1}:{len(dn)}' for i, dn in enumerate(delta_nodes.values())]}")
 
     return delta_nodes, diffs
+
+
+def create_multichannel_voxel_dataset(df_data, grid_size=(60, 20, 20)):
+    """
+    Converts bridge data into 3D volumes with 8 physical channels.
+    """
+    # Use the 8 variables defined in your constants.py
+    value_cols = VARIABLE_NAMES 
+    
+    # 1. Merge Coordinates
+    if 'X' not in df_data.columns:
+        raise ValueError("Data must contain node coordinates")
+    else:
+        df_full = df_data.copy()
+
+    # 2. Discretize coordinates into grid indices
+    # We use pd.cut to map physical X,Y,Z to 0 -> grid_size-1
+    for axis, size in zip(['X', 'Y', 'Z'], grid_size):
+        col_name = f'{axis.lower()}_idx'
+        df_full[col_name] = pd.cut(df_full[axis], bins=size, labels=False, include_lowest=True)
+
+    # 3. Process snapshots
+    samples = []
+    labels = []
+    
+    # Each scenario + time step is a unique 3D state
+    grouped = df_full.groupby(['scenario', 'time'])
+    
+    for (scenario, time), group in grouped:
+        # Initialize grid: (Length, Height, Width, Channels)
+        vol = np.zeros(grid_size + (len(value_cols),))
+        
+        for i, col in enumerate(value_cols):
+            # Aggregate: Take max stress/deformation in each voxel
+            voxel_map = group.groupby(['x_idx', 'y_idx', 'z_idx'])[col].max().dropna()
+            
+            for index, val in voxel_map.items():
+                # CORRECT INDEXING: Concatenate the 3D index tuple with the channel index
+                # (x, y, z) + (channel,) -> (x, y, z, channel)
+                vol[index + (i,)] = val
+        
+        samples.append(vol)
+        labels.append(group['health'].iloc[0])
+
+    X_vol = np.array(samples)
+    y_binary = (np.array(labels) > 0).astype(int)
+    
+    return X_vol, y_binary
+
+
+def build_bridge_3d_cnn(input_shape):
+    # input_shape will be (32, 12, 8, 8)
+    model = models.Sequential([
+        # Layer 1: Spatial feature extraction
+        layers.Conv3D(32, (3, 3, 3), activation='relu', padding='same', input_shape=input_shape),
+        layers.MaxPooling3D((2, 2, 2)),
+        layers.BatchNormalization(),
+        
+        # Layer 2: Complex physical patterns
+        layers.Conv3D(64, (3, 3, 3), activation='relu', padding='same'),
+        layers.MaxPooling3D((2, 2, 1)), # Less pooling on Z because bridge is narrow
+        layers.BatchNormalization(),
+        
+        # Layer 3: Global feature aggregation
+        layers.Conv3D(128, (3, 3, 3), activation='relu', padding='same'),
+        layers.GlobalAveragePooling3D(), 
+        
+        # Dense Head
+        layers.Dense(64, activation='relu'),
+        layers.Dropout(0.5),
+        layers.Dense(1, activation='sigmoid')
+    ])
+    
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    return model
+
+
+
+def compare_bridge_dynamics(df, node_number, healthy_scenario=1, damaged_scenario=0, variable='TotalDeformation'):
+    """
+    Computes FFT for a specific node to compare vibrations between healthy and damaged states.
+    
+    Args:
+        df: Your main dataframe containing 'scenario', 'time', 'Node Number' and physics columns.
+        node_number: The ID of the node to analyze (choose a mid-span node for best results).
+        variable: The physical variable to analyze (TotalDeformation or DirectionalDeformation_Y_axis).
+    """
+    
+    plt.figure(figsize=(15, 6))
+    
+    for scenario_id, label, color in [(healthy_scenario, 'Healthy', 'blue'), (damaged_scenario, 'Damaged', 'red')]:
+        # 1. Extract the time series for this specific node/scenario
+        subset = df[(df['health'] == scenario_id) & (df['Node Number'] == node_number)].sort_values('time')
+        
+        if subset.empty:
+            print(f"No data for Node {node_number} in Scenario {scenario_id}")
+            continue
+                    
+        time = subset['time'].values
+        signal = subset[variable].values
+        
+        # 2. Calculate Sampling Frequency (fs)
+        dt = np.mean(np.diff(time))
+        fs = 1.0 / dt
+        n = len(signal)
+        
+        # 3. Perform FFT
+        # We subtract the mean (detrending) to ignore the static load and focus on the vibration
+        fft_values = np.fft.rfft(signal - np.mean(signal))
+        frequencies = np.fft.rfftfreq(n, d=dt)
+        magnitude = np.abs(fft_values)
+        
+        # 4. Plotting the Spectrum
+        plt.plot(frequencies, magnitude, label=f"{label} (Scenario {scenario_id})", color=color, alpha=0.8)
+        
+        # Find peak frequency
+        peak_idx = np.argmax(magnitude)
+        print(f"[{label}] Peak Frequency: {frequencies[peak_idx]:.3f} Hz")
+
+    plt.title(f"Frequency Spectrum Comparison at Node {node_number} ({variable})")
+    plt.xlabel("Frequency (Hz)")
+    plt.ylabel("Magnitude (Energy)")
+    plt.legend()
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
+    
+    # Bridges usually have low natural frequencies (0.5Hz to 20Hz)
+    # We zoom in on this range to see the "Mode Shifts"
+    plt.xlim(0, 30) 
+    plt.show()
+

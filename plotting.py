@@ -1,5 +1,6 @@
 
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
 pio.renderers.default = "notebook"
@@ -308,3 +309,91 @@ def plot_node_variation_across_scenarios(df, node_number, variable="TotalDeforma
     plt.show()
 
     
+def visualize_voxel_snapshot(X_vol, sample_idx=0, channel_idx=4, threshold=0.01):
+    """
+    Visualizes a single channel of a 3D Voxel volume using a 3D scatter plot.
+    
+    Args:
+        X_vol: The 5D tensor (N, 32, 12, 8, 8)
+        sample_idx: Which bridge snapshot to look at.
+        channel_idx: Which variable (0-7). Default 4 is Equivalent Stress.
+        threshold: Only plot voxels with values above this (to see the bridge shape).
+    """
+    # 1. Extract the specific 3D volume for one channel
+    # Shape becomes (32, 12, 8)
+    vol_3d = X_vol[sample_idx, :, :, :, channel_idx]
+    
+    # 2. Get the indices of non-zero (or high value) voxels
+    indices = np.where(vol_3d > threshold)
+    values = vol_3d[indices]
+    
+    # 3. Create a temporary plotting dataframe
+    # We use the voxel indices as coordinates
+    plot_df = pd.DataFrame({
+        'X': indices[0],
+        'Y': indices[1],
+        'Z': indices[2],
+        'Value': values
+    })
+    
+    # 4. Use a 3D Scatter Plot (similar to your existing visualization)
+    fig = plt.figure(figsize=(15, 7))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Color by the physical value (e.g. Stress)
+    scatter = ax.scatter(plot_df['X'], plot_df['Z'], plot_df['Y'], 
+                         c=plot_df['Value'], cmap='jet', s=50, alpha=0.6)
+    
+    ax.set_xlabel('Length (Bins)')
+    ax.set_ylabel('Width (Bins)')
+    ax.set_zlabel('Height (Bins)')
+    plt.colorbar(scatter, label=f'Channel {channel_idx} intensity')
+    plt.title(f"Voxel Visualization: Sample {sample_idx}, Variable: {VARIABLE_NAMES[channel_idx]}")
+    
+    # Set equal aspect ratio to avoid bridge looking squashed
+    ax.set_box_aspect((32, 8, 12)) 
+    plt.show()
+
+
+def plot_nodes_time_series(df, node_numbers, variable, scenario=None, health=None):
+    """
+    Plots the time series of a given variable for selected nodes.
+    If multiple scenarios are present, plots each scenario as a separate line.
+    If multiple nodes are given, plots each in its own subplot (vertically).
+
+    Args:
+        df: DataFrame containing 'Node Number', 'time', 'scenario', and the variable to plot.
+        node_numbers: List of node numbers to plot.
+        variable: The variable/column name to plot.
+        scenario: (Optional) Scenario ID to filter.
+        health: (Optional) Health state to filter.
+    """
+    if type(node_numbers) == int:
+        node_numbers = [node_numbers]
+
+    n_nodes = len(node_numbers)
+    fig, axes = plt.subplots(n_nodes, 1, figsize=(15, 4 * n_nodes), sharex=True)
+    if n_nodes == 1:
+        axes = [axes]
+
+    for ax, node in zip(axes, node_numbers):
+        subset = df[df['Node Number'] == node]
+        if health is not None:
+            subset = subset[subset['health'] == health]
+        if subset.empty:
+            ax.text(0.5, 0.5, f"No data for Node {node} with given filters.", ha='center', va='center')
+            ax.set_title(f'Node {node}')
+            continue
+        scenarios = subset['scenario'].unique() if 'scenario' in subset.columns else [None]
+        for sc in scenarios:
+            sc_subset = subset[subset['scenario'] == sc] if sc is not None else subset
+            if scenario is not None and sc != scenario:
+                continue
+            ax.plot(sc_subset['time'], sc_subset[variable], label=f'Scenario {sc}')
+        ax.set_xlabel('Time')
+        ax.set_ylabel(variable)
+        ax.set_title(f'Time Series of {variable} for Node {node}')
+        ax.legend()
+        ax.grid(True, linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    plt.show()
