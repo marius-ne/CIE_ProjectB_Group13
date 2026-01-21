@@ -379,7 +379,9 @@ def get_data_variable_aggregated(
 
 
 def get_data_variable_and_region_aggregated(
-    scenario_combination: tuple
+    scenario_combination: tuple,
+    filter_invalid_nodes: bool = True,
+    drop_invalid_nodes: bool = False,
 ):
     """
     Reads all data files from one scenario of load, train_config and season and takes all health groups
@@ -397,7 +399,11 @@ def get_data_variable_and_region_aggregated(
     dfs_regions = []
     for region in REGIONS.keys():
 
-        df_vars = get_data_variable_aggregated((train_config, load, season, region))
+        df_vars = get_data_variable_aggregated(
+            (train_config, load, season, region),
+            filter_out_invalid_nodes=filter_invalid_nodes,
+            drop_invalid_nodes=drop_invalid_nodes,
+        )
 
         dfs_regions.append(df_vars)
 
@@ -593,7 +599,8 @@ def reshape_multi_variable_to_wide_nodes(
     df,
     value_cols=None,
     all_nodes=None,
-    fill_value=0
+    fill_value=None,
+    fail_on_missing: bool = True,
 ):
     """
     Reshape long-format dataframe to node-centric rows stratified by scenario.
@@ -638,14 +645,16 @@ def reshape_multi_variable_to_wide_nodes(
 
     # Get sorted unique times (preserve natural order)
     unique_times = sorted(df['time'].unique(), key=lambda x: float(x))
-    time_cols = [str(t).replace('.', '_') for t in unique_times]
-
+    
     # Prepare list of scenarios and nodes: use only node numbers present in the dataframe
     scenarios = sorted(df['scenario'].unique())
     all_nodes = sorted(df['Node Number'].unique())
 
-    # We'll build a DataFrame indexed by (scenario, Node Number)
-    index_all = pd.MultiIndex.from_product([scenarios, all_nodes], names=['scenario', 'Node Number'])
+    # Initial Index Strategy:
+    # If the user explicitly provided all_nodes, we might want to enforce structure initially,
+    # but since we are about to filter bad data, we will rebuild this index later anyway.
+    # For the metadata aggregation, we start with the pairs that actually exist.
+    index_all = pd.MultiIndex.from_frame(df[['scenario', 'Node Number']].drop_duplicates().sort_values(['scenario', 'Node Number']))
 
     # Aggregate metadata (health, X, Y, Z) per (scenario, Node Number) using first()
     meta = df.groupby(['scenario', 'Node Number'], sort=False).agg({
@@ -655,19 +664,52 @@ def reshape_multi_variable_to_wide_nodes(
         'Z': 'first'
     })
 
-    # Reindex metadata to full cartesian index so every scenario/node is present
+    # Reindex metadata (this handles the case where we might want to fill coordinates later)
     meta = meta.reindex(index_all)
 
     # If coordinates missing, try to fill from COORDS_DF by Node Number
-    if 'Node Number' in COORDS_DF.columns:
+    # Assuming COORDS_DF is available in the global scope or imported
+    if 'COORDS_DF' in globals() and 'Node Number' in COORDS_DF.columns:
         coords_map = COORDS_DF.set_index('Node Number')[['X', 'Y', 'Z']]
-        # coords_map may have index dtype mismatch; ensure numeric
-        # Fill missing X/Y/Z where available
         missing_coords_mask = meta[['X','Y','Z']].isnull().any(axis=1)
         if missing_coords_mask.any():
             nodes_missing = meta[missing_coords_mask].index.get_level_values('Node Number')
+            # Handle potential index type mismatch or missing nodes in COORDS_DF gracefully
             coords_for_nodes = coords_map.reindex(nodes_missing).values
             meta.loc[missing_coords_mask, ['X','Y','Z']] = coords_for_nodes
+
+    # Work on a copy to avoid mutating caller data
+    df = df.copy()
+
+    # Drop (scenario, Node Number) pairs that do not have the full set of time points.
+    counts = df.groupby(['scenario', 'Node Number'], sort=False)['time'].nunique().reset_index(name='time_count')
+    expected_time_count = len(unique_times)
+    incomplete = counts[counts['time_count'] < expected_time_count]
+
+    if not incomplete.empty:
+        # Build summary for warning
+        num_dropped = len(incomplete)
+        sample = incomplete.head(10)
+        sample_str = ", ".join(f"(s={int(r['scenario'])}, n={int(r['Node Number'])})" for _, r in sample.iterrows())
+        print(f"WARNING: Dropping {num_dropped} (scenario, node) pairs missing time points. Examples: {sample_str}")
+
+        # Construct MultiIndex of bad pairs and filter them out from df
+        bad_pairs = pd.MultiIndex.from_frame(incomplete[['scenario', 'Node Number']])
+        df = df[~df.set_index(['scenario', 'Node Number']).index.isin(bad_pairs)].reset_index(drop=True)
+
+        # If nothing remains after filtering, raise
+        if df.empty:
+            raise ValueError("All data dropped because (scenario, Node Number) pairs were missing time points.")
+
+        # --- FIX STARTS HERE ---
+        # Do NOT use from_product. It resurrects the dropped nodes if they exist in other scenarios.
+        # Instead, use the pairs that actually survived the filtering.
+        existing_pairs = df[['scenario', 'Node Number']].drop_duplicates().sort_values(['scenario', 'Node Number'])
+        index_all = pd.MultiIndex.from_frame(existing_pairs)
+        
+        # Re-sync meta to the filtered index
+        meta = meta.reindex(index_all)
+        # --- FIX ENDS HERE ---
 
     # Build variable-time wide block per variable and concatenate
     var_blocks = []
@@ -680,38 +722,58 @@ def reshape_multi_variable_to_wide_nodes(
             aggfunc='first'
         )
         # Ensure all time columns present and ordered
-        pivot = pivot.reindex(columns=unique_times, fill_value=np.nan)
+        pivot = pivot.reindex(columns=unique_times)
         # Rename columns to <var>_t<time>
         pivot.columns = [f"{var}_t{str(t).replace('.', '_')}" for t in pivot.columns]
-        # Reindex to full cartesian index (scenarios x all_nodes)
+        
+        # Reindex to our CLEANED index_all. 
+        # Since index_all only contains valid rows, this won't introduce NaNs.
         pivot = pivot.reindex(index_all)
         var_blocks.append(pivot)
 
     # Concatenate all variable blocks horizontally
     vars_wide = pd.concat(var_blocks, axis=1)
 
-    # Fill missing variable values with fill_value (e.g., 0)
-    vars_wide = vars_wide.fillna(fill_value)
+    if fill_value is not None:
+        vars_wide = vars_wide.fillna(fill_value)
 
     # Combine metadata and variables
     combined = pd.concat([meta, vars_wide], axis=1)
 
-    # If health is missing (e.g., for some scenario/node), try to infer from scenario:
-    # some pipeline uses scenario encoding where region==0 -> healthy; if health still missing leave NaN
     # Reset index to get columns
     combined = combined.reset_index()
 
-    # Order columns: scenario, Node Number, health, X, Y, Z, then var columns
+    # Check for missing values
+    meta_cols = ['scenario', 'Node Number', 'health', 'X', 'Y', 'Z']
+    var_time_cols = [c for c in combined.columns if any(c.startswith(v + "_t") for v in value_cols)]
+    check_cols = [c for c in meta_cols + var_time_cols if c in combined.columns]
+
+    missing_counts = combined[check_cols].isna().sum()
+    total_missing = int(missing_counts.sum())
+    if total_missing > 0:
+        missing_summary = missing_counts[missing_counts > 0].to_dict()
+        sample_rows = combined[combined[check_cols].isna().any(axis=1)].head(10)
+        msg_lines = [
+            f"reshape_multi_variable_to_wide_nodes detected {total_missing} missing values across {len(missing_summary)} columns.",
+            f"Missing per column: {missing_summary}",
+            "Sample rows with missing values (up to 10):",
+            sample_rows.to_string(index=False)
+        ]
+        msg = "\n".join(msg_lines)
+        if fail_on_missing:
+            raise ValueError(msg)
+        else:
+            print("WARNING:", msg)
+
+    # Order columns
     var_cols_order = [c for c in combined.columns if any(c.startswith(v + "_t") for v in value_cols)]
     col_order = ['scenario', 'Node Number', 'health', 'X', 'Y', 'Z'] + var_cols_order
-    # Keep only columns that exist (in case some were missing)
     col_order = [c for c in col_order if c in combined.columns]
     combined = combined[col_order]
 
-    # Sanity check: verify that for each (scenario, Node Number, time, variable)
-    # the value in the reconstructed wide DataFrame equals the original value in df.
+    # Sanity check: verify values match original
     try:
-        # Build long form of original values
+        # This part of the logic remains valid as it does an inner join
         df_long = df[['scenario', 'Node Number', 'time', 'X', 'Y', 'Z', 'health'] + value_cols].melt(
             id_vars=['scenario', 'Node Number', 'time', 'X', 'Y', 'Z', 'health'],
             value_vars=value_cols,
@@ -719,7 +781,6 @@ def reshape_multi_variable_to_wide_nodes(
             value_name='orig_value'
         )
 
-        # Determine expected wide columns present in combined
         expected_cols = []
         for var in value_cols:
             for t in unique_times:
@@ -734,13 +795,11 @@ def reshape_multi_variable_to_wide_nodes(
                 var_name='var_time',
                 value_name='new_value'
             )
-            # extract variable and time from column name
             split = combined_long['var_time'].str.rsplit('_t', n=1)
             combined_long['variable'] = split.str[0]
             combined_long['time'] = split.str[1].str.replace('_', '.').astype(float)
             combined_long = combined_long[['scenario', 'Node Number', 'time', 'variable', 'new_value']]
 
-            # Merge to compare original and reconstructed
             merged_chk = pd.merge(
                 df_long[['scenario', 'Node Number', 'time', 'variable', 'orig_value']],
                 combined_long,
@@ -754,7 +813,6 @@ def reshape_multi_variable_to_wide_nodes(
             orig = merged_chk['orig_value'].to_numpy(dtype=float)
             new = merged_chk['new_value'].to_numpy(dtype=float)
 
-            # consider NaN == NaN, otherwise numeric closeness
             orig_nan = np.isnan(orig)
             new_nan = np.isnan(new)
             both_nan = orig_nan & new_nan
@@ -774,12 +832,37 @@ def reshape_multi_variable_to_wide_nodes(
                 )
             else:
                 print("Sanity check passed: reshaped wide node dataframe matches original variables.")
-    except Exception as e:
-        # surface the error to the caller with context
+    except Exception:
         raise
 
-    return combined
+    # --- FIX VERIFICATION LOGIC ---
+    # The original verification assumed a rectangular matrix (num_scenarios * num_nodes).
+    # Since we dropped rows breaking the rectangle, we must verify against the ACTUAL surviving rows.
+    
+    num_time_points = expected_time_count
+    num_surviving_pairs = len(index_all)
 
+    # Expected total rows in the LONG dataframe (filtered version)
+    expected_long_rows = num_surviving_pairs * num_time_points
+    actual_long_rows = df.shape[0]
+
+    if actual_long_rows != expected_long_rows:
+        raise ValueError(
+            f"Row count mismatch in long-form data: expected {expected_long_rows} rows "
+            f"({num_surviving_pairs} unique scenario-node pairs * {num_time_points} times), "
+            f"but found {actual_long_rows}."
+        )
+
+    # Verify combined wide has one row per surviving (scenario, node)
+    expected_wide_rows = num_surviving_pairs
+    actual_wide_rows = combined.shape[0]
+    if actual_wide_rows != expected_wide_rows:
+        raise ValueError(f"Wide dataframe row count mismatch: expected {expected_wide_rows} rows, got {actual_wide_rows}.")
+
+    print(f"Row count verification passed: {actual_long_rows} long rows -> {actual_wide_rows} wide rows "
+          f"({num_surviving_pairs} surviving node pairs, {num_time_points} time points).")
+
+    return combined
 
 def reshape_multi_variable_to_wide(df, value_cols=None):
     """

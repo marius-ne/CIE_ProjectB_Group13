@@ -27,6 +27,8 @@ if DATA_FOLDER_PATH == "data/Train_new_data/":
 else:
     DATA_FORMAT = "old"
 
+EVALUATION_FORMAT = "nodal" # or "temporal "
+
 VARIABLES = {
       0: "TotalDeformation",
       1: "DirectionalDeformation_X_axis",
