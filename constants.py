@@ -117,7 +117,8 @@ ONE_HOT_INDICATORS = [
 VARIABLE_NAMES = list(VARIABLES.values())
 
 
-
+# Valid and invalid nodes in terms of missing / not missing deformation
+# are the same for old and new data!
 with open("all_node_numbers.txt", "r") as f:
     global NODE_NUMBERS
     NODE_NUMBERS = [int(line.strip()) for line in f.readlines()]
