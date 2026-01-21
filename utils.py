@@ -417,7 +417,8 @@ def get_data_variable_and_region_aggregated(
 
 
 def get_data_variable_and_region_and_season_aggregated(
-    scenario_combination: tuple
+    scenario_combination: tuple,
+    drop_invalid_nodes: bool = False,
 ):
     """
     Reads all data files from one scenario of train_config and load, and aggregates across all seasons, regions, and variables.
@@ -433,7 +434,7 @@ def get_data_variable_and_region_and_season_aggregated(
     for season in SEASONS.keys():
         for region in REGIONS.keys():
             try:
-                df = get_data_variable_aggregated((train_config, load, season, region))
+                df = get_data_variable_aggregated((train_config, load, season, region), drop_invalid_nodes=drop_invalid_nodes)
                 all_dfs.append(df)
             except FileNotFoundError:
                 print(f"Skipping missing file for scenario: {combination_to_string((train_config, load, season, region, 0))}")
@@ -477,7 +478,7 @@ def get_data_variable_and_region_and_season_and_load_aggregated(
     return df_all
 
 
-def get_data_all_aggregated(drop_invalid_nodes: bool = False):
+def get_data_all_aggregated(filter_invalid_nodes: bool = True, drop_invalid_nodes: bool = False):
     """
     Reads all data files for all combinations of season, load, train_config, health, and variable,
     and merges them into a single DataFrame.
@@ -493,7 +494,11 @@ def get_data_all_aggregated(drop_invalid_nodes: bool = False):
                     scenario = (train_config, load, season, region)
                     # get_data_variable_aggregated expects a 4-tuple (train_config, load, season, health)
                     try:
-                        df_vars = get_data_variable_aggregated(scenario, drop_invalid_nodes=drop_invalid_nodes)
+                        df_vars = get_data_variable_aggregated(
+                            scenario, 
+                            filter_out_invalid_nodes=filter_invalid_nodes,
+                            drop_invalid_nodes=drop_invalid_nodes
+                            )
                         all_dfs.append(df_vars)
                     except FileNotFoundError as e:
                         raise ValueError(f"Skipping missing file for scenario: {combination_to_string((*scenario, 0))}")
@@ -913,3 +918,131 @@ def reshape_multi_variable_to_wide(df, value_cols=None):
     
     print(f"Reshaping complete. Final Matrix Shape: {df_wide.shape}")
     return df_wide
+
+
+def _infer_scenario_labels(y: pd.Series, scenarios: pd.Series) -> pd.Series:
+    """
+    Infer one label per scenario. Verifies consistency; if inconsistent, uses mode and warns.
+    Returns a Series indexed by scenario with int labels 0/1.
+    """
+    df_lab = pd.DataFrame({'scenario': scenarios, 'y': y}).dropna()
+    agg = df_lab.groupby('scenario')['y'].agg(list)
+
+    labels = {}
+    for sc, vals in agg.items():
+        vals = pd.Series(vals).astype(int)
+        if vals.nunique() == 1:
+            labels[sc] = int(vals.iloc[0])
+        else:
+            mode_val = int(vals.mode().iloc[0])
+            print(f"WARNING: scenario {sc} has mixed labels {sorted(vals.unique())}; using mode={mode_val}.")
+            labels[sc] = mode_val
+    return pd.Series(labels, name='label')
+
+
+def stratified_group_train_test_split(
+    scenarios: np.ndarray,
+    scenario_labels: np.ndarray,
+    test_size: float = 0.2,
+    random_state: int = 0
+):
+    """
+    Stratified split over groups (scenarios) with safeguards:
+    - If a class has >=2 scenarios, ensure at least 1 stays in train and 1 goes to test.
+    - If a class has only 1 scenario, it can only appear in one split (warns).
+    Returns (train_scenarios, test_scenarios).
+    """
+    rng = np.random.RandomState(random_state)
+    scenarios = np.asarray(scenarios)
+    scenario_labels = np.asarray(scenario_labels).astype(int)
+
+    classes = np.unique(scenario_labels)
+    test_set = []
+
+    for c in classes:
+        cls_mask = scenario_labels == c
+        cls_sc = scenarios[cls_mask]
+        n = len(cls_sc)
+        if n == 0:
+            continue
+
+        # desired test count (rounded), then enforce bounds
+        n_test = int(round(n * test_size))
+        if n >= 2:
+            n_test = max(1, min(n_test, n - 1))  # keep at least 1 in each split
+        else:
+            # n == 1: cannot be in both splits
+            if n_test not in (0, 1):
+                n_test = int(bool(test_size >= 0.5))
+            print(f"WARNING: class {c} has only one scenario; it will appear only in {'test' if n_test==1 else 'train'}.")
+
+        if n_test > 0:
+            chosen = rng.choice(cls_sc, size=n_test, replace=False)
+            test_set.append(chosen)
+
+    test_sc = np.unique(np.concatenate(test_set)) if test_set else np.array([], dtype=scenarios.dtype)
+    test_sc_set = set(test_sc)
+    train_sc = np.array([sc for sc in scenarios if sc not in test_sc_set])
+
+    return train_sc, test_sc
+
+
+def split_by_scenario(
+    X: pd.DataFrame,
+    y: pd.Series,
+    scenario_col: str = 'scenario',
+    test_size: float = 0.2,
+    random_state: int = 0,
+    stratified: bool = True
+):
+    """
+    Group-aware split with scenario-level stratification and diagnostics.
+    Returns: X_train, X_test, y_train, y_test, scenarios_train, scenarios_test
+    """
+    if scenario_col not in X.columns:
+        raise ValueError(f"'{scenario_col}' column not found in X")
+
+    # One label per scenario
+    scenario_labels_s = _infer_scenario_labels(y, X[scenario_col]).astype(int)
+    unique_scenarios = scenario_labels_s.index.to_numpy()
+    scenario_labels = scenario_labels_s.values
+
+    if stratified and len(np.unique(scenario_labels)) > 1:
+        scenarios_train, scenarios_test = stratified_group_train_test_split(
+            unique_scenarios, scenario_labels, test_size=test_size, random_state=random_state
+        )
+    else:
+        from sklearn.model_selection import GroupShuffleSplit
+        gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
+        (train_idx, test_idx), = gss.split(unique_scenarios, groups=unique_scenarios)
+        scenarios_train = unique_scenarios[train_idx]
+        scenarios_test = unique_scenarios[test_idx]
+
+    # Masks
+    train_mask = X[scenario_col].isin(scenarios_train)
+    test_mask = X[scenario_col].isin(scenarios_test)
+
+    # Final splits
+    X_train = X[train_mask].reset_index(drop=True)
+    X_test = X[test_mask].reset_index(drop=True)
+    y_train = y[train_mask].reset_index(drop=True)
+    y_test = y[test_mask].reset_index(drop=True)
+
+    # Safety: no overlap
+    inter = set(scenarios_train).intersection(set(scenarios_test))
+    assert len(inter) == 0, f"Scenario leakage: {inter}"
+
+    # Diagnostics (scenario-level and row-level)
+    print(f"Scenarios: train={len(scenarios_train)}, test={len(scenarios_test)}")
+    try:
+        sc_train_counts = scenario_labels_s.loc[scenarios_train].value_counts().sort_index()
+        sc_test_counts = scenario_labels_s.loc[scenarios_test].value_counts().sort_index()
+        print("Scenario-level class counts (train):", sc_train_counts.to_dict())
+        print("Scenario-level class counts (test):", sc_test_counts.to_dict())
+    except Exception:
+        pass
+    print("Row-level class distribution (train):\n", y_train.value_counts())
+    print("Row-level class distribution (test):\n", y_test.value_counts())
+
+    return X_train, X_test, y_train, y_test, scenarios_train, scenarios_test
+
