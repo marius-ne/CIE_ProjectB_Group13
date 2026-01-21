@@ -465,7 +465,7 @@ def get_data_variable_and_region_and_season_and_load_aggregated(
     return df_all
 
 
-def get_data_all_aggregated():
+def get_data_all_aggregated(drop_invalid_nodes: bool = False):
     """
     Reads all data files for all combinations of season, load, train_config, health, and variable,
     and merges them into a single DataFrame.
@@ -481,7 +481,7 @@ def get_data_all_aggregated():
                     scenario = (train_config, load, season, region)
                     # get_data_variable_aggregated expects a 4-tuple (train_config, load, season, health)
                     try:
-                        df_vars = get_data_variable_aggregated(scenario)
+                        df_vars = get_data_variable_aggregated(scenario, drop_invalid_nodes=drop_invalid_nodes)
                         all_dfs.append(df_vars)
                     except FileNotFoundError as e:
                         raise ValueError(f"Skipping missing file for scenario: {combination_to_string((*scenario, 0))}")

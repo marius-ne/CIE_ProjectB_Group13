@@ -20,6 +20,7 @@ COORDS_DF['Node Number'] = COORDS_DF['Node Number'].astype(int)
 # ------------------
 
 DATA_FOLDER_PATH = "data/Data2/"
+# DATA_FOLDER_PATH = "data/Train_new_data/"
 
 if DATA_FOLDER_PATH == "data/Train_new_data/":
     DATA_FORMAT = "new"
