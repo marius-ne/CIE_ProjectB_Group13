@@ -233,13 +233,17 @@ def get_variable_difference_between_combinations(comb1: tuple, comb2: tuple, top
 
 def get_variable_difference_between_dataframes(df1, df2, var_name: str, top_pct: float = 1.0):
     """
-    Computes the difference in the variable between two data_frames.
+    Computes the difference in the variable between two data_frames and keeps only the top nodes
+    by per-node max absolute difference over time.
+    
     Args:
         df1, df2 (pd.DataFrame): Each a data-frame containing the same variable.
-        top_pct (float): If <1.0, keep only the top percentage of differences by absolute value.
-                         If >1.0, keep only the top N nodes by absolute difference.
+        top_pct (float):
+            - If 0 < top_pct <= 1.0: keep the top fraction of nodes (ceil(top_pct * num_nodes_with_nonzero_diff)).
+            - If top_pct > 1.0: keep the top N nodes.
     Returns:
         pd.DataFrame: DataFrame with Node Number, time, X, Y, Z, and the difference in the variable.
+                      Rows from non-selected nodes have the variable set to NaN.
     """
     # Ensure both dataframes have the same columns
     if set(df1.columns) != set(df2.columns):
@@ -250,47 +254,41 @@ def get_variable_difference_between_dataframes(df1, df2, var_name: str, top_pct:
     df1 = df1[keep_cols]
     df2 = df2[keep_cols]
 
-    # Check node numbers and time for consistency
+    # Merge on metadata
     merge_cols = ["Node Number", "time", "X", "Y", "Z"]
     merged = pd.merge(df1, df2, on=merge_cols, suffixes=('_1', '_2'), how='inner')
 
-    # Compute difference with safety check
+    # Safety check
     if not (merged[f"{var_name}_1"].shape == merged[f"{var_name}_2"].shape and merged[f"{var_name}_1"].index.equals(merged[f"{var_name}_2"].index)):
         raise ValueError("DataFrames to subtract do not have matching shapes or indices.")
 
+    # Compute difference
     merged[var_name] = merged[f"{var_name}_1"] - merged[f"{var_name}_2"]
-
-    # Keep only the top_pct number of top nodes by absolute difference
     abs_diff = np.abs(merged[var_name])
-    # Only consider indices where the difference is non-zero
-    # NOTE adjust r_tol, currently 10%
-    # Mask out values close to zero for threshold calculation, but keep original indices for assignment
-    # Mask: where abs_diff is at least 10% of the smaller of the two values (elementwise)
-    min_val = np.minimum(np.abs(merged[f"{var_name}_1"]), np.abs(merged[f"{var_name}_2"]))
-    abs_diff_mask = abs_diff != 0.0
-    abs_diff_nonzero = abs_diff[abs_diff_mask]
-    N_non_zero = abs_diff_mask.sum()
-    nodes_non_zero = merged.loc[abs_diff_mask, "Node Number"].unique()
-    
-    if len(abs_diff_nonzero) == 0:
-        # If there are no non-zero differences, return an empty DataFrame
-        # with the same columns and dtypes as `merged`
+
+    # Per-node aggregate (max over time)
+    per_node_max = abs_diff.groupby(merged["Node Number"]).max()
+
+    # Consider only nodes with any non-zero difference
+    nonzero_nodes = per_node_max[per_node_max > 0]
+    if nonzero_nodes.empty:
         merged[var_name] = np.nan
         return merged
 
-    if top_pct < 1.0:
-        # Keep only nodes where abs_diff is at least top_pct * min(abs(val1), abs(val2))
-        threshold_mask = abs_diff >= (top_pct * min_val + 1e-15)
-        merged.loc[~threshold_mask, var_name] = np.nan
-    elif top_pct > 1.0:
-        # Get indices of top_pct largest differences (by value, not index)
-        top_indices = abs_diff_nonzero.sort_values(ascending=False).head(int(top_pct)).index
-        # Set all other values to NaN
-        merged.loc[~merged.index.isin(top_indices), var_name] = np.nan
+    # Determine how many nodes to keep
+    if 0 < top_pct <= 1.0:
+        k = int(np.ceil(top_pct * len(nonzero_nodes)))
+        k = max(1, k)
+    else:
+        k = int(top_pct)
+        k = max(1, min(k, len(nonzero_nodes)))
 
-    # Select relevant columns
-    # result_cols = merge_cols + [var_name]
-    # result = merged[result_cols]
+    # Select top nodes by max abs diff
+    top_nodes = nonzero_nodes.sort_values(ascending=False).head(k).index
+
+    # Mask out non-top nodes
+    keep_mask = merged["Node Number"].isin(top_nodes)
+    merged.loc[~keep_mask, var_name] = np.nan
 
     return merged
 
