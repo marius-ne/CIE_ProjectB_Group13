@@ -9,7 +9,11 @@ from constants import *
 
 def combination_to_string(combination):
     train_config, load, season, region, variable = combination
-    return f"{TRAIN_CONFIGS[train_config]}__{LOADS[load]}__{SEASONS[season]}__{REGIONS[region]}__{VARIABLE_NAMES[variable]}"
+    if DATA_FORMAT == "old":
+        string = f"{TRAIN_CONFIGS[train_config]}__{LOADS[load]}__{SEASONS[season]}__{REGIONS[region]}__{VARIABLE_NAMES[variable]}"
+    else:
+        string = f"{TRAIN_CONFIGS[train_config]}__{SEASONS[season]}__{LOADS[load]}__{REGIONS[region]}__{VARIABLE_NAMES[variable]}"
+    return string
 
 def combination_to_scenario_number(combination):
     """
@@ -94,21 +98,33 @@ def read_data_file(
 
     # Construct filename from scenario according to the folder structure
     results_paths = ["Results", "Results1"]
-    base_path = Path("data/Data2")
+    base_path = Path(DATA_FOLDER_PATH)
+
 
     for results_path in results_paths:
-        filename = base_path
-        filename /= TRAIN_CONFIGS[train_config]
-        filename /= LOADS[load]
-        filename /= SEASONS[season]
-        filename /= REGIONS[region]
-        filename /= results_path
-        filename /= VARIABLES[variable] + ".csv"
+        if DATA_FORMAT == "old":
+            filename = base_path
+            filename /= TRAIN_CONFIGS[train_config]
+            filename /= LOADS[load]
+            filename /= SEASONS[season]
+            filename /= REGIONS[region]
+            filename /= results_path
+            filename /= VARIABLES[variable]
+            filename = filename.with_suffix(".csv")
+        else:
+            filename = base_path
+            filename /= TRAIN_CONFIGS[train_config]
+            filename /= SEASONS[season]
+            filename /= LOADS[load]
+            filename /= REGIONS[region]
+            filename /= results_path
+            filename /= VARIABLES[variable]
+            filename = filename.with_suffix(".csv")
 
         if filename.exists():
             break
     else:
-        raise FileNotFoundError(f"Data file not found for combination: {combination_to_string(combination)}")
+        raise FileNotFoundError(f"Data file not found for: {str(filename)}")
 
 
     # Construct the expected filename string for comparison
@@ -249,8 +265,12 @@ def get_variable_difference_between_dataframes(df1, df2, var_name: str, top_pct:
     # Only consider indices where the difference is non-zero
     # NOTE adjust r_tol, currently 10%
     # Mask out values close to zero for threshold calculation, but keep original indices for assignment
-    abs_diff_mask = ~np.isclose(0, abs_diff, rtol=1e-1, atol=0)
+    # Mask: where abs_diff is at least 10% of the smaller of the two values (elementwise)
+    min_val = np.minimum(np.abs(merged[f"{var_name}_1"]), np.abs(merged[f"{var_name}_2"]))
+    abs_diff_mask = abs_diff != 0.0
     abs_diff_nonzero = abs_diff[abs_diff_mask]
+    N_non_zero = abs_diff_mask.sum()
+    nodes_non_zero = merged.loc[abs_diff_mask, "Node Number"].unique()
     
     if len(abs_diff_nonzero) == 0:
         # If there are no non-zero differences, return an empty DataFrame
@@ -259,10 +279,9 @@ def get_variable_difference_between_dataframes(df1, df2, var_name: str, top_pct:
         return merged
 
     if top_pct < 1.0:
-        # Keep only the top percentage of differences by absolute value
-        threshold = np.percentile(abs_diff_nonzero, 100 * (1 - top_pct))
-        # Set values below the threshold to null instead of filtering them out
-        merged.loc[abs_diff < threshold, var_name] = np.nan
+        # Keep only nodes where abs_diff is at least top_pct * min(abs(val1), abs(val2))
+        threshold_mask = abs_diff >= (top_pct * min_val + 1e-15)
+        merged.loc[~threshold_mask, var_name] = np.nan
     elif top_pct > 1.0:
         # Get indices of top_pct largest differences (by value, not index)
         top_indices = abs_diff_nonzero.sort_values(ascending=False).head(int(top_pct)).index
@@ -279,6 +298,7 @@ def get_variable_difference_between_dataframes(df1, df2, var_name: str, top_pct:
 def get_data_variable_aggregated(
     scenario_combination: tuple,
     filter_out_invalid_nodes: bool = True,
+    drop_invalid_nodes: bool = False,
 ):
     """
     Reads all data files from one scenario of load, train_config, season, and region and takes all variables
@@ -332,11 +352,19 @@ def get_data_variable_aggregated(
                 )
             ) <= 1e-3)
         )
-        # Set deformation of invalid nodes to 0 instead of filtering them out
-        df_vars.loc[~valid_deformation_mask, ["TotalDeformation",
-                              "DirectionalDeformation_X_axis",
-                              "DirectionalDeformation_Y_axis",
-                              "DirectionalDeformation_Z_axis"]] = 0
+
+        # NOTE ENABLE THIS ONLY FOR GETTING DELTA NODES:
+        # Drop invalid nodes instead of setting them to 0
+        if drop_invalid_nodes:
+            df_vars = df_vars[valid_deformation_mask].copy()
+        else:
+            # DEFAULT
+            # Set deformation of invalid nodes to 0 instead of filtering them out
+            df_vars.loc[~valid_deformation_mask, ["TotalDeformation",
+                                "DirectionalDeformation_X_axis",
+                                "DirectionalDeformation_Y_axis",
+                                "DirectionalDeformation_Z_axis"]] = 0
+        
 
     # Re-order columns
     df_vars = df_vars[shared_cols + VARIABLE_NAMES]
@@ -456,13 +484,56 @@ def get_data_all_aggregated():
                         df_vars = get_data_variable_aggregated(scenario)
                         all_dfs.append(df_vars)
                     except FileNotFoundError as e:
-                        print(f"Skipping missing file for scenario: {combination_to_string((*scenario, 0))}")
-                        continue
+                        raise ValueError(f"Skipping missing file for scenario: {combination_to_string((*scenario, 0))}")
     if not all_dfs:
         raise RuntimeError("No data files found for any scenario.")
     # Concatenate all scenarios together
     df_all = pd.concat(all_dfs, ignore_index=True)
     return df_all
+
+
+def merge_two_dataframes_on_metadata(df1, df2, value_cols1=None, value_cols2=None):
+    """
+    Merges two long-format dataframes (with possibly different variables) into a single long-format dataframe.
+    All original data and columns are preserved. Rows are matched on metadata columns and Node Number.
+    If metadata columns differ, new rows are added (outer join).
+    Variable columns are not suffixed; only unique variable columns are kept.
+
+    Args:
+        df1, df2: Input dataframes in long format.
+        value_cols1, value_cols2: Lists of variable columns to include from each dataframe. If None, uses all except metadata.
+
+    Returns:
+        pd.DataFrame: Merged long-format dataframe.
+    """
+    # Identify metadata columns (intersection of both)
+    metadata_cols = ['health', 'time', 'scenario', 'Node Number']
+    metadata_cols = [col for col in metadata_cols if col in df1.columns and col in df2.columns]
+
+    # Determine value columns if not provided
+    if value_cols1 is None:
+        value_cols1 = [col for col in df1.columns if col not in metadata_cols]
+    if value_cols2 is None:
+        value_cols2 = [col for col in df2.columns if col not in metadata_cols]
+
+    # Prepare for merge: ensure no duplicate variable names
+    overlap_vars = set(value_cols1) & set(value_cols2)
+    if overlap_vars:
+        raise ValueError(f"Variable columns overlap: {overlap_vars}. Please ensure variables are unique between dataframes.")
+
+    # Merge on metadata columns and Node Number, outer join to preserve all rows
+    df_merged = pd.merge(
+        df1[metadata_cols + value_cols1],
+        df2[metadata_cols + value_cols2],
+        on=metadata_cols,
+        how='outer'
+    )
+
+    # Fill missing values with 0 (optional, or use NaN if preferred)
+    df_merged = df_merged.fillna(0)
+
+    print(f"Merged dataframe shape: {df_merged.shape}")
+    return df_merged
 
 
 def select_df_subset(df, scenario_numbers):

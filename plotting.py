@@ -355,6 +355,49 @@ def visualize_voxel_snapshot(X_vol, sample_idx=0, channel_idx=4, threshold=0.01)
     plt.show()
 
 
+def plot_nodes_time_series_for_combinations(combinations, node_numbers, variable, scenario=None, health=None):
+    """
+    Loads dataframes for each combination and plots the time series for selected nodes.
+
+    Args:
+        combinations: Iterable of tuples, each a combination for read_data_file.
+        node_numbers: List of node numbers to plot.
+        variable: The variable/column name to plot.
+        scenario: (Optional) Scenario ID to filter.
+        health: (Optional) Health state to filter.
+    """
+    if type(node_numbers) == int:
+        node_numbers = [node_numbers]
+
+    n_nodes = len(node_numbers)
+    fig, axes = plt.subplots(n_nodes, 1, figsize=(15, 4 * n_nodes), sharex=True)
+    if n_nodes == 1:
+        axes = [axes]
+
+    for ax, node in zip(axes, node_numbers):
+        for combo in combinations:
+            df = read_data_file(*combo, filter_out_invalid_nodes=True)
+            subset = df[df['Node Number'] == node]
+            if health is not None:
+                subset = subset[subset['health'] == health]
+            if subset.empty:
+                continue
+            scenarios = subset['scenario'].unique() if 'scenario' in subset.columns else [None]
+            for sc in scenarios:
+                sc_subset = subset[subset['scenario'] == sc] if sc is not None else subset
+                if scenario is not None and sc != scenario:
+                    continue
+                label = f"{combination_to_string(combo)} | Scenario {sc}" if sc is not None else combination_to_string(combo)
+                ax.plot(sc_subset['time'], sc_subset[variable], label=label)
+        ax.set_xlabel('Time')
+        ax.set_ylabel(variable)
+        ax.set_title(f'Time Series of {variable} for Node {node}')
+        ax.legend()
+        ax.grid(True, linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    plt.show()
+
+
 def plot_nodes_time_series(df, node_numbers, variable, scenario=None, health=None):
     """
     Plots the time series of a given variable for selected nodes.

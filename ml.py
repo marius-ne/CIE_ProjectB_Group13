@@ -109,7 +109,45 @@ def apply_bridge_pca(df, n_components=10):
     return X_pca, y, pca, scaler
 
 
-def get_delta_nodes(top_pct: float = 0.01):
+def get_delta_nodes_from_df(
+    df, 
+    healthy_scenarios: list, 
+    damaged_scenarios: list, 
+    variable_names=VARIABLE_NAMES, 
+    top_pct: float = 0.01
+):
+    """
+    Computes delta nodes for each healthy scenario and its corresponding damaged scenarios from a single DataFrame.
+
+    Args:
+        df: DataFrame containing all scenarios, damage levels, and variables.
+        healthy_scenarios: List of healthy scenario identifiers.
+        damaged_scenarios: Nested list of damaged scenario identifiers corresponding to each healthy scenario.
+        variable_names: List of variable names to compare.
+        top_pct: Percentage of top delta nodes to select.
+
+    Returns:
+        delta_nodes: Dictionary with keys (healthy_scenario, damaged_scenario, variable) and values as arrays of delta node numbers.
+        diffs: Dictionary with keys (healthy_scenario, damaged_scenario, variable) and values as DataFrames of differences.
+    """
+    delta_nodes = {}
+    diffs = {}
+
+    for h_idx, healthy in enumerate(healthy_scenarios):
+        df_healthy = df[df['scenario'] == healthy]
+        for damaged in damaged_scenarios[h_idx]:
+            df_damaged = df[df['scenario'] == damaged]
+            for var_idx, var_name in enumerate(variable_names):
+                df_diff = get_variable_difference_between_dataframes(
+                    df_healthy, df_damaged, var_name=var_name, top_pct=top_pct
+                )
+                key = (healthy, damaged, var_idx)
+                delta_nodes[key] = df_diff[~df_diff[var_name].isna()]["Node Number"].unique()
+                diffs[key] = df_diff
+    return delta_nodes, diffs
+
+
+def get_delta_nodes(top_pct: float = 0.01, drop_invalid_nodes: bool = False):
     """
     Obtain delta nodes for all scenarios, damage levels, and variables.
     Returns:
@@ -123,12 +161,11 @@ def get_delta_nodes(top_pct: float = 0.01):
     # Iterate over all (train_config, load, season) combinations - "scenarios"
     for combo in combinations_grouped_by_region:
         scenario = combo[0][0][:3]
-        df_healthy = get_data_variable_aggregated((*scenario, 0))
+        df_healthy = get_data_variable_aggregated((*scenario, 0), drop_invalid_nodes=drop_invalid_nodes)
 
         # Iterate over damage levels for the given scenario
         for damage in range(1, 7):
-            df_damaged = get_data_variable_aggregated((*scenario, damage))
-
+            df_damaged = get_data_variable_aggregated((*scenario, damage), drop_invalid_nodes=drop_invalid_nodes)
             # Check delta for each variable between the healthy and the current damaged state
             for variable in range(8):
                 var_name = VARIABLE_NAMES[variable]
@@ -219,6 +256,36 @@ def build_bridge_3d_cnn(input_shape):
     return model
 
 
+def compute_node_fft(df, node_number, scenario_id=1, variable='TotalDeformation'):
+    """
+    Computes FFT for a specific node and scenario, returns frequencies and magnitudes.
+
+    Args:
+        df: DataFrame containing 'scenario', 'time', 'Node Number' and physics columns.
+        node_number: The ID of the node to analyze.
+        scenario_id: The health/scenario identifier.
+        variable: The physical variable to analyze.
+
+    Returns:
+        frequencies: Array of frequency bins.
+        magnitude: Array of FFT magnitudes.
+    """
+    subset = df[(df['scenario'] == scenario_id) & (df['Node Number'] == node_number)].sort_values('time')
+    if subset.empty:
+        return None, None
+
+    time = subset['time'].values
+    signal = subset[variable].values
+
+    dt = np.mean(np.diff(time))
+    n = len(signal)
+
+    fft_values = np.fft.rfft(signal - np.mean(signal))
+    frequencies = np.fft.rfftfreq(n, d=dt)
+    magnitude = np.abs(fft_values)
+
+    return frequencies, magnitude
+
 
 def compare_bridge_dynamics(df, node_number, healthy_scenario=1, damaged_scenario=0, variable='TotalDeformation'):
     """
@@ -234,7 +301,7 @@ def compare_bridge_dynamics(df, node_number, healthy_scenario=1, damaged_scenari
     
     for scenario_id, label, color in [(healthy_scenario, 'Healthy', 'blue'), (damaged_scenario, 'Damaged', 'red')]:
         # 1. Extract the time series for this specific node/scenario
-        subset = df[(df['health'] == scenario_id) & (df['Node Number'] == node_number)].sort_values('time')
+        subset = df[(df['scenario'] == scenario_id) & (df['Node Number'] == node_number)].sort_values('time')
         
         if subset.empty:
             print(f"No data for Node {node_number} in Scenario {scenario_id}")

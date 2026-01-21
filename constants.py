@@ -19,6 +19,12 @@ else:
 COORDS_DF['Node Number'] = COORDS_DF['Node Number'].astype(int)
 # ------------------
 
+DATA_FOLDER_PATH = "data/Data2/"
+
+if DATA_FOLDER_PATH == "data/Train_new_data/":
+    DATA_FORMAT = "new"
+else:
+    DATA_FORMAT = "old"
 
 VARIABLES = {
       0: "TotalDeformation",
@@ -40,23 +46,40 @@ ORIGINAL_VARIABLES = {
     6: "Shear Stress XZ (Pa)",
     7: "Shear Stress YZ (Pa)",
 }
-LOADS = {
-    0: "Bigger_train",
-    1: "Smaller_train",
-}
+if DATA_FORMAT == "old":
+    LOADS = {
+        0: "Bigger_train",
+        1: "Smaller_train",
+    }
+else:
+    LOADS = {
+        0: "Big_train",
+        1: "Small_train",
+    }
 SEASONS = {
     0: "Summer",
     1: "Winter",
 }
-REGIONS = {
-    0: "Perfect_structure",                 # Healthy
-    1: "ip_frst_Arc_defect_all_tracks_111", # Arc1, Track1-3
-    2: "ip_1and3track_3_arc_78910",         # Arc3, Track1&3
-    3: "ip_first_track_3arc_78910",         # Arc3, Track1 
-    4: "Ip_1track_1_arc_345",               # Arc1, Track1
-    5: "ip_3track_1_arc_678",               # Arc1, Track3
-    6: "ip_2_arc_all_tracks_222",           # Arc2, Track1-3
-}
+if DATA_FORMAT == "old":
+    REGIONS = {
+        0: "Perfect_structure",                 # Healthy
+        1: "ip_frst_Arc_defect_all_tracks_111", # Arc1, Track1-3
+        2: "ip_1and3track_3_arc_78910",         # Arc3, Track1&3
+        3: "ip_first_track_3arc_78910",         # Arc3, Track1 
+        4: "Ip_1track_1_arc_345",               # Arc1, Track1
+        5: "ip_3track_1_arc_678",               # Arc1, Track3
+        6: "ip_2_arc_all_tracks_222",           # Arc2, Track1-3
+    }
+else:
+    REGIONS = {
+        0: "Perfect_Structure",                 # Healthy
+        1: "ip_frst_Arc_defect_all_tracks_111", # Arc1, Track1-3
+        2: "ip_1and3line_3_arc_78910",         # Arc3, Track1&3
+        3: "ip_first_track_3arc_78910",         # Arc3, Track1 
+        4: "Ip_1track_1_arc_345",               # Arc1, Track1
+        5: "ip_3track_1_arc_678",               # Arc1, Track3
+        6: "ip_2_arc_all_tracks_222",           # Arc2, Track1-3
+    }
 TRAIN_CONFIGS = {
     0: "One_train_1st_track",
     1: "One_train_middle_track",
