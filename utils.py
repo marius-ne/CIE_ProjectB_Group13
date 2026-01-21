@@ -63,7 +63,6 @@ def add_node_locations(df):
     Returns:
         pd.DataFrame: The original dataframe with X, Y, and Z columns added.
     """
-    from constants import COORDS_DF
 
     # Merge the coordinates onto the main dataframe
     # We use 'left' join to keep all rows in your original data
@@ -262,6 +261,13 @@ def get_variable_difference_between_dataframes(df1, df2, var_name: str, top_pct:
     if not (merged[f"{var_name}_1"].shape == merged[f"{var_name}_2"].shape and merged[f"{var_name}_1"].index.equals(merged[f"{var_name}_2"].index)):
         raise ValueError("DataFrames to subtract do not have matching shapes or indices.")
 
+    # Drop rows where either side is NaN for the target variable
+    valid_rows = merged[f"{var_name}_1"].notna() & merged[f"{var_name}_2"].notna()
+    merged = merged[valid_rows].copy()
+    if merged.empty:
+        merged[var_name] = np.nan
+        return merged
+    
     # Compute difference
     merged[var_name] = merged[f"{var_name}_1"] - merged[f"{var_name}_2"]
     abs_diff = np.abs(merged[var_name])
@@ -352,18 +358,20 @@ def get_data_variable_aggregated(
         )
 
         # NOTE ENABLE THIS ONLY FOR GETTING DELTA NODES:
-        # Drop invalid nodes instead of setting them to 0
+        # Drop invalid nodes instead of setting them to 0 / NaN
+        df_vars["valid_deformation"] = valid_deformation_mask.astype(np.uint8)
         if drop_invalid_nodes:
             df_vars = df_vars[valid_deformation_mask].copy()
         else:
-            # DEFAULT
-            # Set deformation of invalid nodes to 0 instead of filtering them out
-            df_vars.loc[~valid_deformation_mask, ["TotalDeformation",
-                                "DirectionalDeformation_X_axis",
-                                "DirectionalDeformation_Y_axis",
-                                "DirectionalDeformation_Z_axis"]] = 0
-        
-
+            # mark invalid deformation values as NaN to be ignored downstream
+            invalid_cols = [
+                "TotalDeformation",
+                "DirectionalDeformation_X_axis",
+                "DirectionalDeformation_Y_axis",
+                "DirectionalDeformation_Z_axis",
+            ]
+            df_vars.loc[~valid_deformation_mask, invalid_cols] = np.nan
+            
     # Re-order columns
     df_vars = df_vars[shared_cols + VARIABLE_NAMES]
 
@@ -579,6 +587,198 @@ def filter_outliers(df: pd.DataFrame, lower_pct=0.001, upper_pct=1):
     print(f"Outliers values: {filtered_nodes['TotalDeformation'].unique()}")
 
     return df_no_outliers, outliers
+
+
+def reshape_multi_variable_to_wide_nodes(
+    df,
+    value_cols=None,
+    all_nodes=None,
+    fill_value=0
+):
+    """
+    Reshape long-format dataframe to node-centric rows stratified by scenario.
+    Each row = one (scenario, Node Number). Columns = for each variable and timestep:
+        <Variable>_t<time>
+    Plus columns: X, Y, Z, health
+
+    Args:
+        df (pd.DataFrame): long-format dataframe with at least columns
+            ['scenario','Node Number','time','X','Y','Z','health', <variables>]
+        value_cols (list): list of variables to include. If None, defaults to 8 common vars.
+        all_nodes (iterable or None): if provided, ensures every scenario has every node in this list.
+            If None, the function will try to import VALID_NODE_NUMBERS from constants and use that.
+        fill_value: value to fill for missing variable entries (default 0).
+
+    Returns:
+        pd.DataFrame: rows = (scenario, Node Number), columns = health,X,Y,Z and var_time columns.
+    """
+
+    if value_cols is None:
+        value_cols = [
+            'TotalDeformation',
+            'DirectionalDeformation_X_axis',
+            'DirectionalDeformation_Y_axis',
+            'DirectionalDeformation_Z_axis',
+            'EquivalentStress',
+            'ShearStress_XY',
+            'ShearStress_XZ',
+            'ShearStress_YZ'
+        ]
+
+    # Ensure required columns exist
+    required = {'scenario', 'Node Number', 'time', 'health', 'X', 'Y', 'Z'}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    # Filter value_cols to those actually present
+    value_cols = [c for c in value_cols if c in df.columns]
+    if not value_cols:
+        raise ValueError("No value columns found in dataframe.")
+
+    # Get sorted unique times (preserve natural order)
+    unique_times = sorted(df['time'].unique(), key=lambda x: float(x))
+    time_cols = [str(t).replace('.', '_') for t in unique_times]
+
+    # Prepare list of scenarios and nodes: use only node numbers present in the dataframe
+    scenarios = sorted(df['scenario'].unique())
+    all_nodes = sorted(df['Node Number'].unique())
+
+    # We'll build a DataFrame indexed by (scenario, Node Number)
+    index_all = pd.MultiIndex.from_product([scenarios, all_nodes], names=['scenario', 'Node Number'])
+
+    # Aggregate metadata (health, X, Y, Z) per (scenario, Node Number) using first()
+    meta = df.groupby(['scenario', 'Node Number'], sort=False).agg({
+        'health': 'first',
+        'X': 'first',
+        'Y': 'first',
+        'Z': 'first'
+    })
+
+    # Reindex metadata to full cartesian index so every scenario/node is present
+    meta = meta.reindex(index_all)
+
+    # If coordinates missing, try to fill from COORDS_DF by Node Number
+    if 'Node Number' in COORDS_DF.columns:
+        coords_map = COORDS_DF.set_index('Node Number')[['X', 'Y', 'Z']]
+        # coords_map may have index dtype mismatch; ensure numeric
+        # Fill missing X/Y/Z where available
+        missing_coords_mask = meta[['X','Y','Z']].isnull().any(axis=1)
+        if missing_coords_mask.any():
+            nodes_missing = meta[missing_coords_mask].index.get_level_values('Node Number')
+            coords_for_nodes = coords_map.reindex(nodes_missing).values
+            meta.loc[missing_coords_mask, ['X','Y','Z']] = coords_for_nodes
+
+    # Build variable-time wide block per variable and concatenate
+    var_blocks = []
+    for var in value_cols:
+        # pivot to have times as columns; index = (scenario, Node Number)
+        pivot = df.pivot_table(
+            index=['scenario', 'Node Number'],
+            columns='time',
+            values=var,
+            aggfunc='first'
+        )
+        # Ensure all time columns present and ordered
+        pivot = pivot.reindex(columns=unique_times, fill_value=np.nan)
+        # Rename columns to <var>_t<time>
+        pivot.columns = [f"{var}_t{str(t).replace('.', '_')}" for t in pivot.columns]
+        # Reindex to full cartesian index (scenarios x all_nodes)
+        pivot = pivot.reindex(index_all)
+        var_blocks.append(pivot)
+
+    # Concatenate all variable blocks horizontally
+    vars_wide = pd.concat(var_blocks, axis=1)
+
+    # Fill missing variable values with fill_value (e.g., 0)
+    vars_wide = vars_wide.fillna(fill_value)
+
+    # Combine metadata and variables
+    combined = pd.concat([meta, vars_wide], axis=1)
+
+    # If health is missing (e.g., for some scenario/node), try to infer from scenario:
+    # some pipeline uses scenario encoding where region==0 -> healthy; if health still missing leave NaN
+    # Reset index to get columns
+    combined = combined.reset_index()
+
+    # Order columns: scenario, Node Number, health, X, Y, Z, then var columns
+    var_cols_order = [c for c in combined.columns if any(c.startswith(v + "_t") for v in value_cols)]
+    col_order = ['scenario', 'Node Number', 'health', 'X', 'Y', 'Z'] + var_cols_order
+    # Keep only columns that exist (in case some were missing)
+    col_order = [c for c in col_order if c in combined.columns]
+    combined = combined[col_order]
+
+    # Sanity check: verify that for each (scenario, Node Number, time, variable)
+    # the value in the reconstructed wide DataFrame equals the original value in df.
+    try:
+        # Build long form of original values
+        df_long = df[['scenario', 'Node Number', 'time', 'X', 'Y', 'Z', 'health'] + value_cols].melt(
+            id_vars=['scenario', 'Node Number', 'time', 'X', 'Y', 'Z', 'health'],
+            value_vars=value_cols,
+            var_name='variable',
+            value_name='orig_value'
+        )
+
+        # Determine expected wide columns present in combined
+        expected_cols = []
+        for var in value_cols:
+            for t in unique_times:
+                col = f"{var}_t{str(t).replace('.', '_')}"
+                if col in combined.columns:
+                    expected_cols.append(col)
+
+        if expected_cols:
+            combined_long = combined[['scenario', 'Node Number', 'X', 'Y', 'Z', 'health'] + expected_cols].melt(
+                id_vars=['scenario', 'Node Number', 'X', 'Y', 'Z', 'health'],
+                value_vars=expected_cols,
+                var_name='var_time',
+                value_name='new_value'
+            )
+            # extract variable and time from column name
+            split = combined_long['var_time'].str.rsplit('_t', n=1)
+            combined_long['variable'] = split.str[0]
+            combined_long['time'] = split.str[1].str.replace('_', '.').astype(float)
+            combined_long = combined_long[['scenario', 'Node Number', 'time', 'variable', 'new_value']]
+
+            # Merge to compare original and reconstructed
+            merged_chk = pd.merge(
+                df_long[['scenario', 'Node Number', 'time', 'variable', 'orig_value']],
+                combined_long,
+                on=['scenario', 'Node Number', 'time', 'variable'],
+                how='inner'
+            )
+
+            if merged_chk.empty:
+                raise ValueError("Sanity check failed: no overlapping rows found between original and reconstructed data.")
+
+            orig = merged_chk['orig_value'].to_numpy(dtype=float)
+            new = merged_chk['new_value'].to_numpy(dtype=float)
+
+            # consider NaN == NaN, otherwise numeric closeness
+            orig_nan = np.isnan(orig)
+            new_nan = np.isnan(new)
+            both_nan = orig_nan & new_nan
+            both_num = ~orig_nan & ~new_nan
+
+            close_mask = np.zeros(len(merged_chk), dtype=bool)
+            close_mask[both_nan] = True
+            if both_num.any():
+                close_mask[both_num] = np.isclose(orig[both_num], new[both_num], rtol=1e-6, atol=1e-8)
+
+            mismatches = merged_chk.loc[~close_mask]
+            if not mismatches.empty:
+                sample = mismatches.head(10)
+                raise ValueError(
+                    f"Mismatch between original and reshaped data for {len(mismatches)} entries. "
+                    f"Sample mismatches:\n{sample.to_string(index=False)}"
+                )
+            else:
+                print("Sanity check passed: reshaped wide node dataframe matches original variables.")
+    except Exception as e:
+        # surface the error to the caller with context
+        raise
+
+    return combined
 
 
 def reshape_multi_variable_to_wide(df, value_cols=None):
