@@ -15,6 +15,41 @@ def combination_to_string(combination):
         string = f"{TRAIN_CONFIGS[train_config]}__{SEASONS[season]}__{LOADS[load]}__{REGIONS[region]}__{VARIABLE_NAMES[variable]}"
     return string
 
+
+def scenario_number_to_combination(scenario_number):
+    """
+    Inverse of combination_to_scenario_number.
+    Decodes an integer scenario_number into a tuple:
+        (train_config, load, season, region)
+
+    Accepts a single int and returns a 4-tuple of ints.
+    If an iterable of ints is provided, returns a list of 4-tuples.
+    """
+
+    # support array-like input
+    if np.ndim(scenario_number) > 0:
+        return [scenario_number_to_combination(int(s)) for s in scenario_number]
+
+    sn = int(scenario_number)
+    n_regions = len(REGIONS)
+    n_seasons = len(SEASONS)
+    n_loads = len(LOADS)
+    n_train = len(TRAIN_CONFIGS)
+
+    region = sn % n_regions
+    sn //= n_regions
+    season = sn % n_seasons
+    sn //= n_seasons
+    load = sn % n_loads
+    sn //= n_loads
+    train_config = sn
+
+    if train_config < 0 or train_config >= n_train:
+        raise ValueError(f"scenario_number out of range: decoded train_config={train_config}")
+
+    return (train_config, load, season, region)
+
+
 def combination_to_scenario_number(combination):
     """
     Encodes a combination of (train_config, load, season, region, variable)
@@ -599,275 +634,260 @@ def filter_outliers(df: pd.DataFrame, lower_pct=0.001, upper_pct=1):
 
     return df_no_outliers, outliers
 
-
 def reshape_multi_variable_to_wide_nodes(
     df,
     value_cols=None,
     all_nodes=None,
     fill_value=None,
     fail_on_missing: bool = True,
+    sanity_check_rows: int = 2000,   # 0 disables; avoids the gigantic melt/merge
+    downcast_values: bool = False,   # True -> tries to downcast numeric value cols to save RAM
 ):
     """
-    Reshape long-format dataframe to node-centric rows stratified by scenario.
-    Each row = one (scenario, Node Number). Columns = for each variable and timestep:
-        <Variable>_t<time>
-    Plus columns: X, Y, Z, health
+    Memory-efficient reshape:
+      rows   = (scenario, Node Number)
+      cols   = health, X, Y, Z + <Variable>_t<time>
 
-    Args:
-        df (pd.DataFrame): long-format dataframe with at least columns
-            ['scenario','Node Number','time','X','Y','Z','health', <variables>]
-        value_cols (list): list of variables to include. If None, defaults to 8 common vars.
-        all_nodes (iterable or None): if provided, ensures every scenario has every node in this list.
-            If None, the function will try to import VALID_NODE_NUMBERS from constants and use that.
-        fill_value: value to fill for missing variable entries (default 0).
-
-    Returns:
-        pd.DataFrame: rows = (scenario, Node Number), columns = health,X,Y,Z and var_time columns.
+    Notes:
+      - If all_nodes is provided, we *expand* to scenarios x all_nodes (can increase RAM!).
+      - Replaces full "melt sanity check" with a sampled check (sanity_check_rows).
     """
+    import numpy as np
+    import pandas as pd
 
     if value_cols is None:
         value_cols = [
-            'TotalDeformation',
-            'DirectionalDeformation_X_axis',
-            'DirectionalDeformation_Y_axis',
-            'DirectionalDeformation_Z_axis',
-            'EquivalentStress',
-            'ShearStress_XY',
-            'ShearStress_XZ',
-            'ShearStress_YZ'
+            "TotalDeformation",
+            "DirectionalDeformation_X_axis",
+            "DirectionalDeformation_Y_axis",
+            "DirectionalDeformation_Z_axis",
+            "EquivalentStress",
+            "ShearStress_XY",
+            "ShearStress_XZ",
+            "ShearStress_YZ",
         ]
 
-    # Ensure required columns exist
-    required = {'scenario', 'Node Number', 'time', 'health', 'X', 'Y', 'Z'}
+    # ---- validate columns ----
+    required = {"scenario", "Node Number", "time", "health", "X", "Y", "Z"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
-    # Filter value_cols to those actually present
+    # keep only value cols that exist
     value_cols = [c for c in value_cols if c in df.columns]
     if not value_cols:
         raise ValueError("No value columns found in dataframe.")
 
-    # Get sorted unique times (preserve natural order)
-    unique_times = sorted(df['time'].unique(), key=lambda x: float(x))
-    
-    # Prepare list of scenarios and nodes: use only node numbers present in the dataframe
-    scenarios = sorted(df['scenario'].unique())
-    all_nodes = sorted(df['Node Number'].unique())
+    # minimal view of needed columns (avoid df.copy())
+    use_cols = ["scenario", "Node Number", "time", "health", "X", "Y", "Z"] + value_cols
+    df_use = df.loc[:, use_cols]
 
-    # Initial Index Strategy:
-    # If the user explicitly provided all_nodes, we might want to enforce structure initially,
-    # but since we are about to filter bad data, we will rebuild this index later anyway.
-    # For the metadata aggregation, we start with the pairs that actually exist.
-    index_all = pd.MultiIndex.from_frame(df[['scenario', 'Node Number']].drop_duplicates().sort_values(['scenario', 'Node Number']))
+    # ---- unique times, ordered ----
+    # robust-ish sort: numeric if possible, otherwise stable string sort
+    times = pd.Index(df_use["time"].unique())
+    try:
+        unique_times = list(times[np.argsort(times.astype(float))])
+    except Exception:
+        unique_times = sorted(times, key=lambda x: str(x))
 
-    # Aggregate metadata (health, X, Y, Z) per (scenario, Node Number) using first()
-    meta = df.groupby(['scenario', 'Node Number'], sort=False).agg({
-        'health': 'first',
-        'X': 'first',
-        'Y': 'first',
-        'Z': 'first'
-    })
-
-    # Reindex metadata (this handles the case where we might want to fill coordinates later)
-    meta = meta.reindex(index_all)
-
-    # If coordinates missing, try to fill from COORDS_DF by Node Number
-    # Assuming COORDS_DF is available in the global scope or imported
-    if 'COORDS_DF' in globals() and 'Node Number' in COORDS_DF.columns:
-        coords_map = COORDS_DF.set_index('Node Number')[['X', 'Y', 'Z']]
-        missing_coords_mask = meta[['X','Y','Z']].isnull().any(axis=1)
-        if missing_coords_mask.any():
-            nodes_missing = meta[missing_coords_mask].index.get_level_values('Node Number')
-            # Handle potential index type mismatch or missing nodes in COORDS_DF gracefully
-            coords_for_nodes = coords_map.reindex(nodes_missing).values
-            meta.loc[missing_coords_mask, ['X','Y','Z']] = coords_for_nodes
-
-    # Work on a copy to avoid mutating caller data
-    df = df.copy()
-
-    # Drop (scenario, Node Number) pairs that do not have the full set of time points.
-    counts = df.groupby(['scenario', 'Node Number'], sort=False)['time'].nunique().reset_index(name='time_count')
     expected_time_count = len(unique_times)
-    incomplete = counts[counts['time_count'] < expected_time_count]
+    if expected_time_count == 0:
+        raise ValueError("No time points found in dataframe.")
 
-    if not incomplete.empty:
-        # Build summary for warning
-        num_dropped = len(incomplete)
-        sample = incomplete.head(10)
-        sample_str = ", ".join(f"(s={int(r['scenario'])}, n={int(r['Node Number'])})" for _, r in sample.iterrows())
-        print(f"WARNING: Dropping {num_dropped} (scenario, node) pairs missing time points. Examples: {sample_str}")
+    # Make time categorical to keep ordering and reduce memory during unstack
+    # (this copies only the 'time' column)
+    df_use = df_use.assign(
+        time=pd.Categorical(df_use["time"], categories=unique_times, ordered=True)
+    )
 
-        # Construct MultiIndex of bad pairs and filter them out from df
-        bad_pairs = pd.MultiIndex.from_frame(incomplete[['scenario', 'Node Number']])
-        df = df[~df.set_index(['scenario', 'Node Number']).index.isin(bad_pairs)].reset_index(drop=True)
+    # Optional: downcast numeric value columns to save RAM
+    if downcast_values:
+        for c in value_cols:
+            if pd.api.types.is_numeric_dtype(df_use[c]):
+                df_use[c] = pd.to_numeric(df_use[c], downcast="float")
 
-        # If nothing remains after filtering, raise
-        if df.empty:
-            raise ValueError("All data dropped because (scenario, Node Number) pairs were missing time points.")
-
-        # --- FIX STARTS HERE ---
-        # Do NOT use from_product. It resurrects the dropped nodes if they exist in other scenarios.
-        # Instead, use the pairs that actually survived the filtering.
-        existing_pairs = df[['scenario', 'Node Number']].drop_duplicates().sort_values(['scenario', 'Node Number'])
-        index_all = pd.MultiIndex.from_frame(existing_pairs)
-        
-        # Re-sync meta to the filtered index
-        meta = meta.reindex(index_all)
-        # --- FIX ENDS HERE ---
-
-    # Build variable-time wide block per variable and concatenate
-    var_blocks = []
-    for var in value_cols:
-        # pivot to have times as columns; index = (scenario, Node Number)
-        pivot = df.pivot_table(
-            index=['scenario', 'Node Number'],
-            columns='time',
-            values=var,
-            aggfunc='first'
+    # ---- drop incomplete (scenario, node) pairs (small intermediate only) ----
+    counts = (
+        df_use.groupby(["scenario", "Node Number"], sort=False, observed=True)["time"]
+        .nunique()
+    )
+    good_pairs = counts[counts == expected_time_count]
+    if good_pairs.empty:
+        raise ValueError(
+            f"All (scenario, node) pairs are missing time points. Expected {expected_time_count} unique times."
         )
-        # Ensure all time columns present and ordered
-        pivot = pivot.reindex(columns=unique_times)
-        # Rename columns to <var>_t<time>
-        pivot.columns = [f"{var}_t{str(t).replace('.', '_')}" for t in pivot.columns]
-        
-        # Reindex to our CLEANED index_all. 
-        # Since index_all only contains valid rows, this won't introduce NaNs.
-        pivot = pivot.reindex(index_all)
-        var_blocks.append(pivot)
 
-    # Concatenate all variable blocks horizontally
-    vars_wide = pd.concat(var_blocks, axis=1)
+    if len(good_pairs) != len(counts):
+        bad_pairs = counts[counts < expected_time_count]
+        sample = bad_pairs.head(10).reset_index()
+        sample_str = ", ".join(
+            f"(s={r['scenario']}, n={r['Node Number']})" for _, r in sample.iterrows()
+        )
+        print(
+            f"WARNING: Dropping {len(bad_pairs)} (scenario, node) pairs missing time points. Examples: {sample_str}"
+        )
+
+        good_pairs_df = good_pairs.reset_index()[["scenario", "Node Number"]]
+        # merge keeps only good pairs; avoids big MultiIndex isin
+        df_use = df_use.merge(
+            good_pairs_df, on=["scenario", "Node Number"], how="inner", sort=False, copy=False
+        )
+
+    # ---- metadata ----
+    meta = (
+        df_use.groupby(["scenario", "Node Number"], sort=False, observed=True)[
+            ["health", "X", "Y", "Z"]
+        ]
+        .first()
+    )
+
+    # fill missing coords from COORDS_DF if available
+    if "COORDS_DF" in globals() and getattr(globals()["COORDS_DF"], "columns", None) is not None:
+        COORDS_DF = globals()["COORDS_DF"]
+        if "Node Number" in COORDS_DF.columns and {"X", "Y", "Z"}.issubset(COORDS_DF.columns):
+            coords_map = COORDS_DF.set_index("Node Number")[["X", "Y", "Z"]]
+            node_level = meta.index.get_level_values("Node Number")
+            for c in ["X", "Y", "Z"]:
+                if meta[c].isna().any():
+                    meta[c] = meta[c].fillna(node_level.map(coords_map[c]))
+
+    # ---- define final index (memory warning: product expansion can be huge) ----
+    scenarios = meta.index.get_level_values("scenario").unique()
+    if all_nodes is not None:
+        # Explicit user request -> enforce all nodes for every scenario (can blow up RAM)
+        index_all = pd.MultiIndex.from_product(
+            [scenarios, list(all_nodes)], names=["scenario", "Node Number"]
+        )
+    else:
+        index_all = meta.index  # only surviving pairs
+
+    # ---- wide reshape in ONE shot ----
+    # Ensure unique (scenario, node, time) by taking first (cheap + deterministic)
+    df_vals = (
+        df_use.groupby(["scenario", "Node Number", "time"], sort=False, observed=True)[value_cols]
+        .first()
+    )
+    # unstack time -> columns become MultiIndex: (variable, time)
+    wide = df_vals.unstack("time")
+
+    # enforce time column order and presence without creating 8 pivots
+    wide = wide.reindex(columns=unique_times, level=1)
+
+    # align to final index (expands only if all_nodes was provided)
+    wide = wide.reindex(index_all)
+
+    # flatten columns
+    def _tname(t):
+        # keep consistent with your original replace('.', '_')
+        return str(t).replace(".", "_")
+
+    wide.columns = [f"{var}_t{_tname(t)}" for (var, t) in wide.columns]
+    var_time_cols = list(wide.columns)
 
     if fill_value is not None:
-        vars_wide = vars_wide.fillna(fill_value)
+        wide = wide.fillna(fill_value)
 
-    # Combine metadata and variables
-    combined = pd.concat([meta, vars_wide], axis=1)
+    # ---- combine ----
+    meta = meta.reindex(index_all)
+    combined = pd.concat([meta, wide], axis=1).reset_index()
 
-    # Reset index to get columns
-    combined = combined.reset_index()
-
-    # Check for missing values
-    meta_cols = ['scenario', 'Node Number', 'health', 'X', 'Y', 'Z']
-    var_time_cols = [c for c in combined.columns if any(c.startswith(v + "_t") for v in value_cols)]
-    check_cols = [c for c in meta_cols + var_time_cols if c in combined.columns]
+    # ---- missing check (cheap; no melts) ----
+    check_cols = ["scenario", "Node Number", "health", "X", "Y", "Z"] + var_time_cols
+    check_cols = [c for c in check_cols if c in combined.columns]
 
     missing_counts = combined[check_cols].isna().sum()
     total_missing = int(missing_counts.sum())
     if total_missing > 0:
         missing_summary = missing_counts[missing_counts > 0].to_dict()
         sample_rows = combined[combined[check_cols].isna().any(axis=1)].head(10)
-        msg_lines = [
-            f"reshape_multi_variable_to_wide_nodes detected {total_missing} missing values across {len(missing_summary)} columns.",
-            f"Missing per column: {missing_summary}",
-            "Sample rows with missing values (up to 10):",
-            sample_rows.to_string(index=False)
-        ]
-        msg = "\n".join(msg_lines)
+        msg = (
+            f"reshape_multi_variable_to_wide_nodes detected {total_missing} missing values "
+            f"across {len(missing_summary)} columns.\n"
+            f"Missing per column: {missing_summary}\n"
+            f"Sample rows with missing values (up to 10):\n{sample_rows.to_string(index=False)}"
+        )
         if fail_on_missing:
             raise ValueError(msg)
         else:
             print("WARNING:", msg)
 
-    # Order columns
-    var_cols_order = [c for c in combined.columns if any(c.startswith(v + "_t") for v in value_cols)]
-    col_order = ['scenario', 'Node Number', 'health', 'X', 'Y', 'Z'] + var_cols_order
-    col_order = [c for c in col_order if c in combined.columns]
-    combined = combined[col_order]
-
-    # Sanity check: verify values match original
-    try:
-        # This part of the logic remains valid as it does an inner join
-        df_long = df[['scenario', 'Node Number', 'time', 'X', 'Y', 'Z', 'health'] + value_cols].melt(
-            id_vars=['scenario', 'Node Number', 'time', 'X', 'Y', 'Z', 'health'],
-            value_vars=value_cols,
-            var_name='variable',
-            value_name='orig_value'
-        )
-
-        expected_cols = []
-        for var in value_cols:
-            for t in unique_times:
-                col = f"{var}_t{str(t).replace('.', '_')}"
-                if col in combined.columns:
-                    expected_cols.append(col)
-
-        if expected_cols:
-            combined_long = combined[['scenario', 'Node Number', 'X', 'Y', 'Z', 'health'] + expected_cols].melt(
-                id_vars=['scenario', 'Node Number', 'X', 'Y', 'Z', 'health'],
-                value_vars=expected_cols,
-                var_name='var_time',
-                value_name='new_value'
-            )
-            split = combined_long['var_time'].str.rsplit('_t', n=1)
-            combined_long['variable'] = split.str[0]
-            combined_long['time'] = split.str[1].str.replace('_', '.').astype(float)
-            combined_long = combined_long[['scenario', 'Node Number', 'time', 'variable', 'new_value']]
-
-            merged_chk = pd.merge(
-                df_long[['scenario', 'Node Number', 'time', 'variable', 'orig_value']],
-                combined_long,
-                on=['scenario', 'Node Number', 'time', 'variable'],
-                how='inner'
-            )
-
-            if merged_chk.empty:
-                raise ValueError("Sanity check failed: no overlapping rows found between original and reconstructed data.")
-
-            orig = merged_chk['orig_value'].to_numpy(dtype=float)
-            new = merged_chk['new_value'].to_numpy(dtype=float)
-
-            orig_nan = np.isnan(orig)
-            new_nan = np.isnan(new)
-            both_nan = orig_nan & new_nan
-            both_num = ~orig_nan & ~new_nan
-
-            close_mask = np.zeros(len(merged_chk), dtype=bool)
-            close_mask[both_nan] = True
-            if both_num.any():
-                close_mask[both_num] = np.isclose(orig[both_num], new[both_num], rtol=1e-6, atol=1e-8)
-
-            mismatches = merged_chk.loc[~close_mask]
-            if not mismatches.empty:
-                sample = mismatches.head(10)
+    # ---- lightweight sanity check (sampled) ----
+    if sanity_check_rows and sanity_check_rows > 0:
+        # sample from df_vals (already deduped) to avoid huge intermediates
+        n = min(int(sanity_check_rows), len(df_vals))
+        if n > 0:
+            sample = df_vals.sample(n=n, random_state=0)
+            # build quick lookup into combined: set index once
+            comb_idx = combined.set_index(["scenario", "Node Number"])
+            bad = 0
+            for (sc, node, t), row in sample.iterrows():
+                # row: Series of value_cols
+                t_suffix = _tname(t)
+                try:
+                    wide_row = comb_idx.loc[(sc, node)]
+                except KeyError:
+                    bad += 1
+                    continue
+                for var in value_cols:
+                    col = f"{var}_t{t_suffix}"
+                    if col not in wide_row.index:
+                        bad += 1
+                        continue
+                    a = row[var]
+                    b = wide_row[col]
+                    # NaN-safe compare
+                    if (pd.isna(a) and pd.isna(b)):
+                        continue
+                    if pd.isna(a) != pd.isna(b):
+                        bad += 1
+                        continue
+                    # numeric close if possible, else exact
+                    try:
+                        if not np.isclose(float(a), float(b), rtol=1e-6, atol=1e-8):
+                            bad += 1
+                    except Exception:
+                        if a != b:
+                            bad += 1
+            if bad > 0:
                 raise ValueError(
-                    f"Mismatch between original and reshaped data for {len(mismatches)} entries. "
-                    f"Sample mismatches:\n{sample.to_string(index=False)}"
+                    f"Sanity check failed on sampled data: {bad} mismatches "
+                    f"across ~{n*len(value_cols)} comparisons."
                 )
             else:
-                print("Sanity check passed: reshaped wide node dataframe matches original variables.")
-    except Exception:
-        raise
+                print(f"Sanity check passed on a sample of {n} rows.")
 
-    # --- FIX VERIFICATION LOGIC ---
-    # The original verification assumed a rectangular matrix (num_scenarios * num_nodes).
-    # Since we dropped rows breaking the rectangle, we must verify against the ACTUAL surviving rows.
-    
-    num_time_points = expected_time_count
-    num_surviving_pairs = len(index_all)
-
-    # Expected total rows in the LONG dataframe (filtered version)
-    expected_long_rows = num_surviving_pairs * num_time_points
-    actual_long_rows = df.shape[0]
-
+    # ---- row-count verification on filtered LONG data ----
+    # Only valid for the filtered df_use (good pairs only, before any all_nodes expansion).
+    surviving_pairs = df_use.groupby(["scenario", "Node Number"], sort=False, observed=True)["time"].nunique()
+    surviving_pairs = surviving_pairs[surviving_pairs == expected_time_count]
+    expected_long_rows = int(len(surviving_pairs) * expected_time_count)
+    actual_long_rows = int(df_use.shape[0])
     if actual_long_rows != expected_long_rows:
         raise ValueError(
             f"Row count mismatch in long-form data: expected {expected_long_rows} rows "
-            f"({num_surviving_pairs} unique scenario-node pairs * {num_time_points} times), "
+            f"({len(surviving_pairs)} unique scenario-node pairs * {expected_time_count} times), "
             f"but found {actual_long_rows}."
         )
 
-    # Verify combined wide has one row per surviving (scenario, node)
-    expected_wide_rows = num_surviving_pairs
-    actual_wide_rows = combined.shape[0]
+    # Wide rows: depends on whether we expanded via all_nodes
+    expected_wide_rows = int(len(index_all))
+    actual_wide_rows = int(combined.shape[0])
     if actual_wide_rows != expected_wide_rows:
-        raise ValueError(f"Wide dataframe row count mismatch: expected {expected_wide_rows} rows, got {actual_wide_rows}.")
+        raise ValueError(
+            f"Wide dataframe row count mismatch: expected {expected_wide_rows} rows, got {actual_wide_rows}."
+        )
 
-    print(f"Row count verification passed: {actual_long_rows} long rows -> {actual_wide_rows} wide rows "
-          f"({num_surviving_pairs} surviving node pairs, {num_time_points} time points).")
+    print(
+        f"Row count verification passed: {actual_long_rows} long rows -> {actual_wide_rows} wide rows "
+        f"({len(surviving_pairs)} surviving node pairs, {expected_time_count} time points)."
+    )
+
+    # ---- order columns ----
+    col_order = ["scenario", "Node Number", "health", "X", "Y", "Z"] + var_time_cols
+    combined = combined[[c for c in col_order if c in combined.columns]]
 
     return combined
+
 
 def reshape_multi_variable_to_wide(df, value_cols=None):
     """
@@ -987,62 +1007,170 @@ def stratified_group_train_test_split(
     return train_sc, test_sc
 
 
+def _scenario_class_counts(X: pd.DataFrame, y: pd.Series, scenario_col: str = 'scenario') -> pd.DataFrame:
+    """
+    Per-scenario row counts for classes 0 (healthy) and 1 (unhealthy).
+    Returns a DataFrame: [scenario, n0, n1, n_total]
+    """
+    y_bin = (y > 0).astype(int)
+    df = pd.DataFrame({scenario_col: X[scenario_col], 'y': y_bin})
+    grp = df.groupby(scenario_col)['y'].value_counts().unstack(fill_value=0)
+    # Ensure columns exist
+    if 0 not in grp.columns:
+        grp[0] = 0
+    if 1 not in grp.columns:
+        grp[1] = 0
+    grp = grp.rename(columns={0: 'n0', 1: 'n1'})
+    grp['n_total'] = grp['n0'] + grp['n1']
+    return grp.reset_index()
+
+
 def split_by_scenario(
     X: pd.DataFrame,
     y: pd.Series,
     scenario_col: str = 'scenario',
     test_size: float = 0.2,
     random_state: int = 0,
-    stratified: bool = True
+    stratified: bool = True,
+    target_train_ratio_healthy: float | None = None,
+    require_both_classes_in_train: bool = True
 ):
     """
-    Group-aware split with scenario-level stratification and diagnostics.
+    Group-aware split: no scenario leakage.
+    If target_train_ratio_healthy is provided (0..1), chooses train scenarios to approximate that
+    healthy(0)/unhealthy(1) ratio in training rows, while aiming for ~ (1-test_size) of total rows.
+    Otherwise, falls back to stratified group split.
     Returns: X_train, X_test, y_train, y_test, scenarios_train, scenarios_test
     """
     if scenario_col not in X.columns:
         raise ValueError(f"'{scenario_col}' column not found in X")
 
-    # One label per scenario
-    scenario_labels_s = _infer_scenario_labels(y, X[scenario_col]).astype(int)
-    unique_scenarios = scenario_labels_s.index.to_numpy()
-    scenario_labels = scenario_labels_s.values
+    y_bin = (y > 0).astype(int)
+    counts = _scenario_class_counts(X, y_bin, scenario_col)
+    scenarios_all = counts[scenario_col].to_numpy()
 
-    if stratified and len(np.unique(scenario_labels)) > 1:
-        scenarios_train, scenarios_test = stratified_group_train_test_split(
-            unique_scenarios, scenario_labels, test_size=test_size, random_state=random_state
-        )
+    total_rows = int(counts['n_total'].sum())
+    desired_train_rows = int(round((1.0 - test_size) * total_rows))
+
+    # If no target ratio, do a simple stratified group split on scenarios
+    if target_train_ratio_healthy is None:
+        # Basic stratified choice at scenario level using scenario majority label
+        labels_per_sc = (counts['n0'] >= counts['n1']).astype(int)  # 0-majority -> label 0; else 1
+        # Keep at least one scenario per class in each split where possible
+        pos_mask = labels_per_sc.values == 1
+        neg_mask = labels_per_sc.values == 0
+        rng = np.random.RandomState(random_state)
+
+        pos_sc = scenarios_all[pos_mask]
+        neg_sc = scenarios_all[neg_mask]
+
+        # Pick test scenarios per class
+        def pick(cls_sc):
+            n = len(cls_sc)
+            if n == 0:
+                return np.array([], dtype=scenarios_all.dtype)
+            n_test = int(round(n * test_size))
+            if n >= 2:
+                n_test = max(1, min(n_test, n - 1))
+            else:
+                # only 1 scenario -> it can only be in one split
+                n_test = int(test_size >= 0.5)
+            return rng.choice(cls_sc, size=min(n_test, len(cls_sc)), replace=False)
+
+        test_sc = np.unique(np.concatenate([pick(pos_sc), pick(neg_sc)]))
+        test_sc_set = set(test_sc)
+        train_sc = np.array([sc for sc in scenarios_all if sc not in test_sc_set])
     else:
-        from sklearn.model_selection import GroupShuffleSplit
-        gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
-        (train_idx, test_idx), = gss.split(unique_scenarios, groups=unique_scenarios)
-        scenarios_train = unique_scenarios[train_idx]
-        scenarios_test = unique_scenarios[test_idx]
+        # Greedy selection to hit desired ratio and approximate desired train size
+        target = float(np.clip(target_train_ratio_healthy, 0.0, 1.0))
+        rng = np.random.RandomState(random_state)
+        remaining = counts.sample(frac=1.0, random_state=random_state)  # shuffle scenarios
 
-    # Masks
-    train_mask = X[scenario_col].isin(scenarios_train)
-    test_mask = X[scenario_col].isin(scenarios_test)
+        # Optional seeding to ensure both classes present in train
+        train_sel = []
+        train_n0 = 0
+        train_n1 = 0
+        train_rows = 0
 
-    # Final splits
+        has_pos_rows = (remaining['n1'] > 0).any()
+        has_neg_rows = (remaining['n0'] > 0).any()
+        if require_both_classes_in_train and has_pos_rows and has_neg_rows:
+            # Seed one mostly-healthy scenario and one mostly-unhealthy scenario
+            seed_neg = remaining[remaining['n1'] == 0]
+            seed_pos = remaining[remaining['n0'] == 0]
+            if seed_neg.empty:
+                seed_neg = remaining.assign(h_ratio=remaining['n0'] / (remaining['n_total'] + 1e-9)).sort_values('h_ratio', ascending=False).head(1)
+            else:
+                seed_neg = seed_neg.head(1)
+            if seed_pos.empty:
+                seed_pos = remaining.assign(u_ratio=remaining['n1'] / (remaining['n_total'] + 1e-9)).sort_values('u_ratio', ascending=False).head(1)
+            else:
+                seed_pos = seed_pos.head(1)
+
+            for seed in [seed_neg, seed_pos]:
+                row = seed.iloc[0]
+                sc = row[scenario_col]
+                if sc in train_sel:
+                    continue
+                train_sel.append(sc)
+                train_n0 += int(row['n0'])
+                train_n1 += int(row['n1'])
+                train_rows += int(row['n_total'])
+                remaining = remaining[remaining[scenario_col] != sc]
+
+        def objective(n0, n1, rows):
+            # Composite objective: match ratio and size
+            if rows <= 0:
+                ratio_err = 1.0
+            else:
+                ratio_err = abs(n0 / rows - target)
+            size_err = abs(rows - desired_train_rows) / max(1, desired_train_rows)
+            return ratio_err + 0.5 * size_err
+
+        # Greedy add until reaching desired_train_rows
+        while train_rows < desired_train_rows and len(remaining) > 0:
+            best_idx = None
+            best_obj = float('inf')
+            for idx, row in remaining.iterrows():
+                n0 = train_n0 + int(row['n0'])
+                n1 = train_n1 + int(row['n1'])
+                rows = train_rows + int(row['n_total'])
+                obj = objective(n0, n1, rows)
+                if obj < best_obj:
+                    best_obj = obj
+                    best_idx = idx
+            if best_idx is None:
+                break
+            row = remaining.loc[best_idx]
+            sc = row[scenario_col]
+            train_sel.append(sc)
+            train_n0 += int(row['n0'])
+            train_n1 += int(row['n1'])
+            train_rows += int(row['n_total'])
+            remaining = remaining.drop(index=best_idx)
+
+        train_sc = np.array(train_sel)
+        test_sc = remaining[scenario_col].to_numpy()
+
+    # Build masks and splits
+    train_mask = X[scenario_col].isin(train_sc)
+    test_mask = X[scenario_col].isin(test_sc)
+
     X_train = X[train_mask].reset_index(drop=True)
     X_test = X[test_mask].reset_index(drop=True)
     y_train = y[train_mask].reset_index(drop=True)
     y_test = y[test_mask].reset_index(drop=True)
 
-    # Safety: no overlap
-    inter = set(scenarios_train).intersection(set(scenarios_test))
+    # No leakage
+    inter = set(train_sc).intersection(set(test_sc))
     assert len(inter) == 0, f"Scenario leakage: {inter}"
 
-    # Diagnostics (scenario-level and row-level)
-    print(f"Scenarios: train={len(scenarios_train)}, test={len(scenarios_test)}")
-    try:
-        sc_train_counts = scenario_labels_s.loc[scenarios_train].value_counts().sort_index()
-        sc_test_counts = scenario_labels_s.loc[scenarios_test].value_counts().sort_index()
-        print("Scenario-level class counts (train):", sc_train_counts.to_dict())
-        print("Scenario-level class counts (test):", sc_test_counts.to_dict())
-    except Exception:
-        pass
+    # Diagnostics
+    train_ratio_healthy = (y_train == 0).sum() / max(1, len(y_train))
+    print(f"Scenarios: train={len(train_sc)}, test={len(test_sc)}")
+    print(f"Training healthy ratio: {train_ratio_healthy:.3f} (target={target_train_ratio_healthy if target_train_ratio_healthy is not None else 'n/a'})")
     print("Row-level class distribution (train):\n", y_train.value_counts())
     print("Row-level class distribution (test):\n", y_test.value_counts())
 
-    return X_train, X_test, y_train, y_test, scenarios_train, scenarios_test
+    return X_train, X_test, y_train, y_test, train_sc, test_sc
 
