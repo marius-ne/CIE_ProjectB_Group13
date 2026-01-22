@@ -315,17 +315,20 @@ def get_variable_difference_between_dataframes(df1, df2, var_name: str, top_pct:
     if nonzero_nodes.empty:
         merged[var_name] = np.nan
         return merged
-
+    
     # Determine how many nodes to keep
-    if 0 < top_pct <= 1.0:
+    if 0 < top_pct < 1.0:
         k = int(np.ceil(top_pct * len(nonzero_nodes)))
         k = max(1, k)
+        # Select top nodes by max abs diff
+        top_nodes = nonzero_nodes.sort_values(ascending=False).head(k).index
+    elif top_pct == 1.0:
+        # Select all nonzero nodes
+        top_nodes = nonzero_nodes.index
     else:
         k = int(top_pct)
         k = max(1, min(k, len(nonzero_nodes)))
-
-    # Select top nodes by max abs diff
-    top_nodes = nonzero_nodes.sort_values(ascending=False).head(k).index
+        top_nodes = nonzero_nodes.sort_values(ascending=False).head(k).index
 
     # Mask out non-top nodes
     keep_mask = merged["Node Number"].isin(top_nodes)

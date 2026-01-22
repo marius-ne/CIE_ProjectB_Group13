@@ -1,12 +1,9 @@
 import pandas as pd
 import numpy as np
-import tensorflow as tf
 
 import sklearn
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-
-from tensorflow.keras import layers, models
 
 import matplotlib.pyplot as plt
 
@@ -109,7 +106,7 @@ def apply_bridge_pca(df, n_components=10):
     return X_pca, y, pca, scaler
 
 
-def filter_df_to_delta_nodes(df, variable_names=VARIABLE_NAMES, top_pct=0.01):
+def filter_df_to_delta_nodes(df, variable_names=VARIABLE_NAMES, top_pct=1):
     """
     Mark delta nodes instead of rejecting nodes.
 
@@ -306,33 +303,6 @@ def create_multichannel_voxel_dataset(df_data, grid_size=(60, 20, 20)):
     y_binary = (np.array(labels) > 0).astype(int)
     
     return X_vol, y_binary
-
-
-def build_bridge_3d_cnn(input_shape):
-    # input_shape will be (32, 12, 8, 8)
-    model = models.Sequential([
-        # Layer 1: Spatial feature extraction
-        layers.Conv3D(32, (3, 3, 3), activation='relu', padding='same', input_shape=input_shape),
-        layers.MaxPooling3D((2, 2, 2)),
-        layers.BatchNormalization(),
-        
-        # Layer 2: Complex physical patterns
-        layers.Conv3D(64, (3, 3, 3), activation='relu', padding='same'),
-        layers.MaxPooling3D((2, 2, 1)), # Less pooling on Z because bridge is narrow
-        layers.BatchNormalization(),
-        
-        # Layer 3: Global feature aggregation
-        layers.Conv3D(128, (3, 3, 3), activation='relu', padding='same'),
-        layers.GlobalAveragePooling3D(), 
-        
-        # Dense Head
-        layers.Dense(64, activation='relu'),
-        layers.Dropout(0.5),
-        layers.Dense(1, activation='sigmoid')
-    ])
-    
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-    return model
 
 
 def compute_node_fft(df, node_number, scenario_id=1, variable='TotalDeformation'):
