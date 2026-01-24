@@ -14,18 +14,22 @@ if isinstance(coords_source, str):
     COORDS_DF.columns = ['Node Number', 'X', 'Y', 'Z']
 else:
     COORDS_DF = coords_source
-
+    
 # 2. Convert Node Number to int to ensure matching types
 COORDS_DF['Node Number'] = COORDS_DF['Node Number'].astype(int)
 # ------------------
 
-DATA_FOLDER_PATH = "data/Data2/"
-# DATA_FOLDER_PATH = "data/Train_new_data/"
+# DATA_FOLDER_PATH = "data/Data2/"
+DATA_FOLDER_PATH = "data/Train_new_data/"
 
 if DATA_FOLDER_PATH == "data/Train_new_data/":
     DATA_FORMAT = "new"
+    TEST_FOLDER_PATH = "data/Test/Group_13_new_test/Group_13"
+    TEST_CASES = [15, 16, 20]
 else:
     DATA_FORMAT = "old"
+    TEST_FOLDER_PATH = "data/Test/Group_13_old_dataset/Group_13"
+    TEST_CASES = [5, 16, 20] # is it test case 5?
 
 EVALUATION_FORMAT = "nodal" # or "temporal "
 
@@ -83,6 +87,20 @@ else:
         5: "ip_3track_1_arc_678",               # Arc1, Track3
         6: "ip_2_arc_all_tracks_222",           # Arc2, Track1-3
     }
+REGION_BEAMS = {
+    0: [],
+    1: [8, 98, 6, 95, 4, 92],
+    2: [413, 440, 386, 332, 278, 407, 434, 380, 326, 272],
+    3: [407, 434, 380, 326, 272],
+    4: [92, 146, 200, 254, 308],
+    5: [260, 314, 368, 422, 395],
+    6: [14, 15, 107, 13, 12, 104, 10, 11, 101],
+}
+_beam_df = pd.read_csv("all_beam_nodes_annot.csv")
+DEFECTIVE_NODES_BY_REGION = {} 
+for region, beam_nums in REGION_BEAMS.items():
+    DEFECTIVE_NODES_BY_REGION[region] = _beam_df[_beam_df["Beam"].isin(beam_nums)]["Node"].unique().tolist()
+
 TRAIN_CONFIGS = {
     0: "One_train_1st_track",
     1: "One_train_middle_track",
@@ -147,6 +165,9 @@ with open("I_beam_nodes.txt", "r") as f:
 # Valid: have stress (and therefore coordinates and deformation)
 #   We are filtering out nodes all nodes missing stress (these have weird deformation values)
 VALID_NODE_NUMBERS = [nn for nn in NODE_NUMBERS if nn not in (NODES_MISSING_STRESS.union(NODES_MISSING_DEFORMATION))]
+
+# FILTER_NODE_NUMBERS = VALID_NODE_NUMBERS
+FILTER_NODE_NUMBERS = set(X_BEAM_NODES).union(I_BEAM_NODES)
 
 with open("superset_outliers.txt", "r") as f:
     global SUPERSET_OUTLIERS

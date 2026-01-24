@@ -84,6 +84,7 @@ combinations_grouped_by_variable = [
 combinations_grouped_by_region = [
     combinations_grouped_by_variable[i:i + len(REGIONS)] for i in range(0, len(combinations_grouped_by_variable), len(REGIONS))
 ]
+combinations_region_agg = list(set([combo[0][0][:3] for combo in combinations_grouped_by_region]))
 
 def add_node_locations(df):
     """
@@ -113,144 +114,6 @@ def add_node_locations(df):
         # print(f"Warning: {missing_count} nodes did not have matching coordinates.")
 
     return df_with_coords
-
-
-def read_data_file(
-    train_config: int = 0,
-    load: int = 0,
-    season: int = 0,
-    region: int = 0,
-    variable: int = 0,
-    filter_out_invalid_nodes: bool = True,
-    filter_negative_total_deformation: bool = False,
-    melt_time: bool = True,
-):
-    """Reads data according to format and provides the data-frame as-is, with
-    the categorical variables added as columns."""
-
-    combination = (train_config, load, season, region, variable)
-    print("Reading file:", combination_to_string(combination))
-
-    # Construct filename from scenario according to the folder structure
-    results_paths = ["Results", "Results1"]
-    base_path = Path(DATA_FOLDER_PATH)
-
-
-    for results_path in results_paths:
-        if DATA_FORMAT == "old":
-            filename = base_path
-            filename /= TRAIN_CONFIGS[train_config]
-            filename /= LOADS[load]
-            filename /= SEASONS[season]
-            filename /= REGIONS[region]
-            filename /= results_path
-            filename /= VARIABLES[variable]
-            filename = filename.with_suffix(".csv")
-        else:
-            filename = base_path
-            filename /= TRAIN_CONFIGS[train_config]
-            filename /= SEASONS[season]
-            filename /= LOADS[load]
-            filename /= REGIONS[region]
-            filename /= results_path
-            filename /= VARIABLES[variable]
-            filename = filename.with_suffix(".csv")
-
-        if filename.exists():
-            break
-    else:
-        raise FileNotFoundError(f"Data file not found for: {str(filename)}")
-
-
-    # Construct the expected filename string for comparison
-    expected_filename_str = combination_to_string(combination) + ".csv"
-
-    # Build the actual filename string from the path components
-    actual_filename_str = VARIABLES[variable] + ".csv"
-
-    # Check that the constructed string matches the filename
-    if expected_filename_str.split("__")[-1] != actual_filename_str:
-        raise ValueError(f"Variable name mismatch: expected {expected_filename_str}, got {actual_filename_str}")
-
-
-    # Create a unique scenario number from the combination using mixed radix encoding
-    # Each category uses only as many digits as needed for its range
-    scenario_number = combination_to_scenario_number(combination)
-        
-    # Encode the scenario as categorical columns
-    #   -> TODO: Is there a way of encoding that
-    #   preserves information? E.g. like encoding the name of a city as its latitude
-    df = pd.read_csv(filename)
-    num_nodes = len(df)
-    healthy = 1 if region == 0 else 0
-    df["health"] = healthy*np.ones(num_nodes,dtype=np.uint8)
-    df["scenario"] = scenario_number*np.ones(num_nodes,dtype=np.uint32)
-    # df["season"] = season*np.ones(num_nodes,dtype=np.uint8)
-    # df["region"] = region*np.ones(num_nodes,dtype=np.uint8)
-    # df["load"] = load*np.ones(num_nodes,dtype=np.uint8)
-    # df["train_config"] = train_config*np.ones(num_nodes,dtype=np.uint8)
-
-    df = add_node_locations(df)
-
-    # filter_node_numbers = set(VALID_NODE_NUMBERS)
-    filter_node_numbers = set(X_BEAM_NODES).union(I_BEAM_NODES)
-
-    # Identify nodes with missing coordinates
-    if filter_out_invalid_nodes:
-        
-        # Take only filtered nodes
-        df = df[df["Node Number"].isin(filter_node_numbers)]
-
-        # Put stress to 0
-        # Identify nodes with missing stress values
-        stress_variables = list(ORIGINAL_VARIABLES.values())[4:] 
-        stress_cols = [col for col in df.columns if any(var in col for var in stress_variables)]
-        # df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols] = \
-            # df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols].fillna(0)
-
-        # Check that all nodes have coordinates and loads
-        missing_coords_nodes = df[df[["X", "Y", "Z"]].isnull().any(axis=1)]["Node Number"].unique()
-        if len(missing_coords_nodes) > 0:
-            raise ValueError(f"{len(missing_coords_nodes)} nodes are missing coordinates after filtering.")
-        missing_loads_nodes = df[df.isnull().any(axis=1)]["Node Number"].unique()
-        if len(missing_loads_nodes) > 0:
-            print(f"{len(missing_loads_nodes)} nodes are missing load data after filtering.")
-
-    # Melt time columns into a single column
-    if melt_time:
-        var_name = VARIABLE_NAMES[variable]
-
-        # Turn the variable column into a single one and add a new time column
-        df_melted = df.melt(
-            id_vars=["Node Number","health","scenario","X","Y","Z",],
-            var_name="variable",
-            value_name=var_name
-        )
-        # Check that variable name matches original variable names
-        assert all(df_melted["variable"].str[:-4] == ORIGINAL_VARIABLES[variable])
-
-        # Extract time-stamp from variable name
-        df_melted["time"] = df_melted["variable"].str[-3:].astype(np.float64)
-        df_melted.drop(columns=["variable"],inplace=True)
-
-        # Check that data contains all valid node numbers
-        missing_nodes = set(filter_node_numbers) - set(df_melted["Node Number"].unique())
-        if len(missing_nodes) > 0 and filter_out_invalid_nodes:
-            raise ValueError(f"Data for variable {var_name} is missing node numbers: {missing_nodes}")
-
-        df = df_melted
-        del df_melted
-    
-    if filter_negative_total_deformation:
-        # Put negative total deformation to nan
-        if VARIABLE_NAMES[variable] == "TotalDeformation":
-            df.loc[df["TotalDeformation"] < 0, "TotalDeformation"] = np.nan
-
-    # Check that each time value has same count
-    time_counts = df["time"].value_counts()
-    assert time_counts.nunique() == 1, "Not all time values have the same count"
-
-    return df
 
 
 def get_variable_difference_between_combinations(comb1: tuple, comb2: tuple, top_pct: float = 1.0):
@@ -344,6 +207,211 @@ def get_variable_difference_between_dataframes(
 
     merged.loc[~keep_mask, var_name] = np.nan
     return merged
+
+
+def read_test_case(
+    test_case_num: int,
+    filter_out_invalid_nodes: bool = True,
+):
+    """Reads a test case data file according to format and provides the data-frame as-is, with
+    the categorical variables added as columns."""
+
+    print("Reading test case file:", test_case_num)
+
+    # Construct filename from scenario according to the folder structure
+    base_path = Path(TEST_FOLDER_PATH)
+    base_path /= f"Case_{test_case_num}" / "Results" 
+
+    filter_node_numbers = FILTER_NODE_NUMBERS
+
+    df_vars = []
+    for variable in VARIABLES.keys():
+
+        filename = base_path / VARIABLE_NAMES[variable]
+        filename = filename.with_suffix(".csv")
+
+        if not filename.exists():
+            raise FileNotFoundError(f"Test case data file not found for: {str(filename)}")
+
+        df = pd.read_csv(filename)
+
+        df = add_node_locations(df)
+
+        # Melt time
+        var_name = VARIABLE_NAMES[variable]
+
+        if filter_out_invalid_nodes:
+            df = _filter_invalid_nodes(df, filter_node_numbers)
+
+        df = _melt_time_in_df(df, variable, filter_node_numbers)
+
+        # Check that each time value has same count
+        time_counts = df["time"].value_counts()
+        assert time_counts.nunique() == 1, "Not all time values have the same count"
+
+        df_vars.append(df)
+
+    # Concatenating all variables into a single data frame
+    # -> we do an OUTER join, meaning all keys are kept (A U B)
+    #   this should be safe, node numbers and the other shared columns are kept
+    shared_cols = ["Node Number","health","scenario","X","Y","Z","time"]
+    merged_df = functools.reduce(lambda left,right: pd.merge(left,right,on=shared_cols,
+                                              how='outer'), df_vars)
+    # Check that data has been preserved
+    for df in df_vars:
+        for var_name in VARIABLE_NAMES:
+            if var_name in df.columns:
+                  merged = pd.merge(df[shared_cols + [var_name]], merged_df[shared_cols + [var_name]],
+                            on=shared_cols, how='inner')
+                  assert len(merged) == len(df)
+
+    return merged_df
+
+
+def read_data_file(
+    train_config: int = 0,
+    load: int = 0,
+    season: int = 0,
+    region: int = 0,
+    variable: int = 0,
+    filter_out_invalid_nodes: bool = True,
+    filter_negative_total_deformation: bool = False,
+    melt_time: bool = True,
+):
+    """Reads data according to format and provides the data-frame as-is, with
+    the categorical variables added as columns."""
+
+    combination = (train_config, load, season, region, variable)
+    print("Reading file:", combination_to_string(combination))
+
+    # Construct filename from scenario according to the folder structure
+    results_paths = ["Results", "Results1"]
+    base_path = Path(DATA_FOLDER_PATH)
+
+
+    for results_path in results_paths:
+        if DATA_FORMAT == "old":
+            filename = base_path
+            filename /= TRAIN_CONFIGS[train_config]
+            filename /= LOADS[load]
+            filename /= SEASONS[season]
+            filename /= REGIONS[region]
+            filename /= results_path
+            filename /= VARIABLES[variable]
+            filename = filename.with_suffix(".csv")
+        else:
+            filename = base_path
+            filename /= TRAIN_CONFIGS[train_config]
+            filename /= SEASONS[season]
+            filename /= LOADS[load]
+            filename /= REGIONS[region]
+            filename /= results_path
+            filename /= VARIABLES[variable]
+            filename = filename.with_suffix(".csv")
+
+        if filename.exists():
+            break
+    else:
+        raise FileNotFoundError(f"Data file not found for: {str(filename)}")
+
+
+    # Construct the expected filename string for comparison
+    expected_filename_str = combination_to_string(combination) + ".csv"
+
+    # Build the actual filename string from the path components
+    actual_filename_str = VARIABLES[variable] + ".csv"
+
+    # Check that the constructed string matches the filename
+    if expected_filename_str.split("__")[-1] != actual_filename_str:
+        raise ValueError(f"Variable name mismatch: expected {expected_filename_str}, got {actual_filename_str}")
+
+
+    # Create a unique scenario number from the combination using mixed radix encoding
+    # Each category uses only as many digits as needed for its range
+    scenario_number = combination_to_scenario_number(combination)
+        
+    # Encode the scenario as categorical columns
+    #   -> TODO: Is there a way of encoding that
+    #   preserves information? E.g. like encoding the name of a city as its latitude
+    df = pd.read_csv(filename)
+    num_nodes = len(df)
+    healthy = 1 if region == 0 else 0
+    df["health"] = healthy*np.ones(num_nodes,dtype=np.uint8)
+    df["scenario"] = scenario_number*np.ones(num_nodes,dtype=np.uint32)
+    # df["season"] = season*np.ones(num_nodes,dtype=np.uint8)
+    # df["region"] = region*np.ones(num_nodes,dtype=np.uint8)
+    # df["load"] = load*np.ones(num_nodes,dtype=np.uint8)
+    # df["train_config"] = train_config*np.ones(num_nodes,dtype=np.uint8)
+
+    df = add_node_locations(df)
+
+    filter_node_numbers = FILTER_NODE_NUMBERS
+
+    # Identify nodes with missing coordinates
+    if filter_out_invalid_nodes:
+        df = _filter_invalid_nodes(df, filter_node_numbers)
+
+    df = _melt_time_in_df(df, variable, filter_node_numbers)
+    
+    if filter_negative_total_deformation:
+        # Put negative total deformation to nan
+        if VARIABLE_NAMES[variable] == "TotalDeformation":
+            df.loc[df["TotalDeformation"] < 0, "TotalDeformation"] = np.nan
+
+    # Check that each time value has same count
+    time_counts = df["time"].value_counts()
+    assert time_counts.nunique() == 1, "Not all time values have the same count"
+
+    return df
+
+
+def _filter_invalid_nodes(df: pd.DataFrame, filter_node_numbers: list):
+
+    # Take only filtered nodes
+    df = df[df["Node Number"].isin(filter_node_numbers)]
+
+    # Put stress to 0
+    # Identify nodes with missing stress values
+    stress_variables = list(ORIGINAL_VARIABLES.values())[4:] 
+    stress_cols = [col for col in df.columns if any(var in col for var in stress_variables)]
+    # df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols] = \
+        # df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols].fillna(0)
+
+    # Check that all nodes have coordinates and loads
+    missing_coords_nodes = df[df[["X", "Y", "Z"]].isnull().any(axis=1)]["Node Number"].unique()
+    if len(missing_coords_nodes) > 0:
+        raise ValueError(f"{len(missing_coords_nodes)} nodes are missing coordinates after filtering.")
+    missing_loads_nodes = df[df.isnull().any(axis=1)]["Node Number"].unique()
+    if len(missing_loads_nodes) > 0:
+        print(f"{len(missing_loads_nodes)} nodes are missing load data after filtering.")
+
+    return df
+
+
+def _melt_time_in_df(df: pd.DataFrame, variable: str, filter_node_numbers: list):
+
+    # Melt time columns into a single column
+    var_name = VARIABLE_NAMES[variable]
+
+    # Turn the variable column into a single one and add a new time column
+    df_melted = df.melt(
+        id_vars=["Node Number","health","scenario","X","Y","Z",],
+        var_name="variable",
+        value_name=var_name
+    )
+    # Check that variable name matches original variable names
+    assert all(df_melted["variable"].str[:-4] == ORIGINAL_VARIABLES[variable])
+
+    # Extract time-stamp from variable name
+    df_melted["time"] = df_melted["variable"].str[-3:].astype(np.float64)
+    df_melted.drop(columns=["variable"],inplace=True)
+
+    # Check that data contains all valid node numbers
+    missing_nodes = set(filter_node_numbers) - set(df_melted["Node Number"].unique())
+    if len(missing_nodes) > 0:
+        raise ValueError(f"Data for variable {var_name} is missing node numbers: {missing_nodes}")
+
+    return df_melted
 
 
 def get_data_variable_aggregated(

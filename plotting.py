@@ -14,7 +14,7 @@ from constants import COORDS_DF
 from utils import read_data_file, select_df_subset, combination_to_string, VARIABLE_NAMES
 
 
-def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: int=4):
+def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: int=4, annotations: dict=None):
     """
     Plots the bridge structure in 3D using Plotly.
     Optionally highlights nodes in highlight_nodes, or uses a color scale if provided.
@@ -22,11 +22,23 @@ def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: in
         highlight_nodes (list, optional): List of node numbers to highlight.
         color_scale (dictionary-like, optional): Dictionary of {node_number: value}
             of values bewteen 0 and 1 to use for coloring nodes.
+        annotations (dict, optional): Dictionary mapping node_number -> string to append to hover text.
     """
     if color_scale is not None:
-        # color_scale is a dict: {node_number: value}, nodes not present get value 0
+        # color_scale is a dict: {node_number: value}, nodes not present get value np.nan
         node_numbers = COORDS_DF["Node Number"].values
         node_colors = [color_scale.get(nn, np.nan) for nn in node_numbers]
+
+        hover_text = []
+        for nn, val in zip(node_numbers, node_colors):
+            if pd.isna(val):
+                txt = f"Node: {nn}<br>Value: NaN"
+            else:
+                txt = f"Node: {nn}<br>Value: {val:.3e}"
+            if annotations and nn in annotations:
+                txt += f"<br>{annotations[nn]}"
+            hover_text.append(txt)
+
         fig = go.Figure(data=[go.Scatter3d(
             x=COORDS_DF["X"],
             y=COORDS_DF["Y"],
@@ -38,7 +50,9 @@ def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: in
                 colorscale='Viridis',
                 colorbar=dict(title="Value"),
                 showscale=True,
-            )
+            ),
+            text=hover_text,
+            hoverinfo='text'
         )])
         fig.update_layout(
             title="Bridge Structure (colored by value)",
@@ -58,6 +72,13 @@ def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: in
             for idx in node_indices:
                 colors[idx] = 'red'
 
+        hover_text = []
+        for nn in COORDS_DF["Node Number"]:
+            txt = f"Node: {nn}"
+            if annotations and nn in annotations:
+                txt += f"<br>{annotations[nn]}"
+            hover_text.append(txt)
+
         fig = go.Figure(data=[go.Scatter3d(
             x=COORDS_DF["X"],
             y=COORDS_DF["Y"],
@@ -66,7 +87,9 @@ def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: in
             marker=dict(
                 size=s,
                 color=colors,
-            )
+            ),
+            text=hover_text,
+            hoverinfo='text'
         )])
         fig.update_layout(
             title="Bridge Structure (highlighted nodes in red)",
