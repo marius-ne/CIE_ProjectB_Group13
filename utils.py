@@ -340,8 +340,8 @@ def read_data_file(
     df = pd.read_csv(filename)
     num_nodes = len(df)
     healthy = 1 if region == 0 else 0
-    df["health"] = healthy*np.ones(num_nodes,dtype=np.uint8)
     df["scenario"] = scenario_number*np.ones(num_nodes,dtype=np.uint32)
+    # df["health"] = healthy*np.ones(num_nodes,dtype=np.uint8)
     # df["season"] = season*np.ones(num_nodes,dtype=np.uint8)
     # df["region"] = region*np.ones(num_nodes,dtype=np.uint8)
     # df["load"] = load*np.ones(num_nodes,dtype=np.uint8)
@@ -398,7 +398,7 @@ def _melt_time_in_df(df: pd.DataFrame, variable: str, filter_node_numbers: list)
     var_name = VARIABLE_NAMES[variable]
 
     # Turn the variable column into a single one and add a new time column
-    id_vars = ["Node Number","X","Y","Z"] + (["health","scenario"] if "health" in df.columns else [])
+    id_vars = ["Node Number","X","Y","Z"] + (["scenario"] if "scenario" in df.columns else [])
     df_melted = df.melt(
         id_vars=id_vars,
         var_name="variable",
@@ -456,7 +456,7 @@ def get_data_variable_aggregated(
     # Concatenating all variables into a single data frame
     # -> we do an OUTER join, meaning all keys are kept (A U B)
     #   this should be safe, node numbers and the other shared columns are kept
-    shared_cols = ["Node Number","health","scenario","X","Y","Z","time"]
+    shared_cols = ["Node Number","scenario","X","Y","Z","time"]
     df_vars = functools.reduce(lambda left,right: pd.merge(left,right,on=shared_cols,
                                               how='outer'), dfs_variables)
     # Check that data has been preserved
@@ -733,6 +733,7 @@ def filter_outliers(df: pd.DataFrame, lower_pct=0.001, upper_pct=1):
 
     return df_no_outliers, outliers
 
+
 def reshape_multi_variable_to_wide_nodes(
     df,
     y_var_name: str,
@@ -746,11 +747,13 @@ def reshape_multi_variable_to_wide_nodes(
     """
     Memory-efficient reshape:
       rows   = (scenario, Node Number)
-      cols   = health/delta_health, X, Y, Z + <Variable>_t<time>
+      cols   = y_var_name (if present; else filled with NaN), X, Y, Z + <Variable>_t<time>
 
     Notes:
       - If all_nodes is provided, we *expand* to scenarios x all_nodes (can increase RAM!).
       - Replaces full "melt sanity check" with a sampled check (sanity_check_rows).
+      - If y_var_name is NOT in df (e.g. validation data), the function will still run and
+        return a y_var_name column filled with NaN. Missing-check will NOT fail on that column.
     """
     import numpy as np
     import pandas as pd
@@ -766,21 +769,28 @@ def reshape_multi_variable_to_wide_nodes(
             "ShearStress_XZ",
             "ShearStress_YZ",
         ]
+        value_cols = [c for c in value_cols if c in df.columns]
+
+    y_present = (y_var_name in df.columns)
 
     # ---- validate columns ----
-    required = {"scenario", "Node Number", "time", y_var_name, "X", "Y", "Z"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
+    required_base = {"scenario", "Node Number", "time", "X", "Y", "Z"}
+    missing_base = required_base - set(df.columns)
+    if missing_base:
+        raise ValueError(f"Missing required columns: {missing_base}")
 
     # keep only value cols that exist
-    value_cols = [c for c in value_cols if c in df.columns]
     if not value_cols:
         raise ValueError("No value columns found in dataframe.")
 
     # minimal view of needed columns (avoid df.copy())
-    use_cols = ["scenario", "Node Number", "time", y_var_name, "X", "Y", "Z"] + value_cols
-    df_use = df.loc[:, use_cols]
+    # include y only if it exists; we will add it as NaN later if missing
+    use_cols = ["scenario", "Node Number", "time", "X", "Y", "Z"] + ( [y_var_name] if y_present else [] ) + value_cols
+    df_use = df.loc[:, use_cols].copy(deep=False)
+
+    # If y is missing (e.g. validation), add it as NaN so downstream code stays unchanged
+    if not y_present:
+        df_use[y_var_name] = np.nan
 
     # ---- unique times, ordered ----
     # robust-ish sort: numeric if possible, otherwise stable string sort
@@ -892,7 +902,11 @@ def reshape_multi_variable_to_wide_nodes(
     combined = pd.concat([meta, wide], axis=1).reset_index()
 
     # ---- missing check (cheap; no melts) ----
-    check_cols = ["scenario", "Node Number", y_var_name, "X", "Y", "Z"] + var_time_cols
+    # If y was missing in the input, don't count its NaNs as an error.
+    check_cols = ["scenario", "Node Number", "X", "Y", "Z"] + var_time_cols
+    if y_present:
+        check_cols.insert(2, y_var_name)  # after Node Number
+    # (guard)
     check_cols = [c for c in check_cols if c in combined.columns]
 
     missing_counts = combined[check_cols].isna().sum()
@@ -913,15 +927,12 @@ def reshape_multi_variable_to_wide_nodes(
 
     # ---- lightweight sanity check (sampled) ----
     if sanity_check_rows and sanity_check_rows > 0:
-        # sample from df_vals (already deduped) to avoid huge intermediates
         n = min(int(sanity_check_rows), len(df_vals))
         if n > 0:
             sample = df_vals.sample(n=n, random_state=0)
-            # build quick lookup into combined: set index once
             comb_idx = combined.set_index(["scenario", "Node Number"])
             bad = 0
             for (sc, node, t), row in sample.iterrows():
-                # row: Series of value_cols
                 t_suffix = _tname(t)
                 try:
                     wide_row = comb_idx.loc[(sc, node)]
@@ -935,13 +946,11 @@ def reshape_multi_variable_to_wide_nodes(
                         continue
                     a = row[var]
                     b = wide_row[col]
-                    # NaN-safe compare
                     if (pd.isna(a) and pd.isna(b)):
                         continue
                     if pd.isna(a) != pd.isna(b):
                         bad += 1
                         continue
-                    # numeric close if possible, else exact
                     try:
                         if not np.isclose(float(a), float(b), rtol=1e-6, atol=1e-8):
                             bad += 1
@@ -957,7 +966,6 @@ def reshape_multi_variable_to_wide_nodes(
                 print(f"Sanity check passed on a sample of {n} rows.")
 
     # ---- row-count verification on filtered LONG data ----
-    # Only valid for the filtered df_use (good pairs only, before any all_nodes expansion).
     surviving_pairs = df_use.groupby(["scenario", "Node Number"], sort=False, observed=True)["time"].nunique()
     surviving_pairs = surviving_pairs[surviving_pairs == expected_time_count]
     expected_long_rows = int(len(surviving_pairs) * expected_time_count)
@@ -969,7 +977,6 @@ def reshape_multi_variable_to_wide_nodes(
             f"but found {actual_long_rows}."
         )
 
-    # Wide rows: depends on whether we expanded via all_nodes
     expected_wide_rows = int(len(index_all))
     actual_wide_rows = int(combined.shape[0])
     if actual_wide_rows != expected_wide_rows:

@@ -14,7 +14,12 @@ from constants import COORDS_DF
 from utils import read_data_file, select_df_subset, combination_to_string, VARIABLE_NAMES
 
 
-def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: int=4, annotations: dict=None):
+def plot_bridge_3d_structure(
+    highlight_nodes=None, 
+    color_scale: dict=None, 
+    s: int=4, annotations: dict=None,
+    highlight_color: str="red"
+):    
     """
     Plots the bridge structure in 3D using Plotly.
     Optionally highlights nodes in highlight_nodes, or uses a color scale if provided.
@@ -70,7 +75,7 @@ def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: in
         if highlight_nodes is not None:
             node_indices = COORDS_DF[COORDS_DF["Node Number"].isin(highlight_nodes)].index
             for idx in node_indices:
-                colors[idx] = 'red'
+                colors[idx] = highlight_color
 
         hover_text = []
         for nn in COORDS_DF["Node Number"]:

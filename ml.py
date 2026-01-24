@@ -23,7 +23,7 @@ def standardize(X_raw):
         index=X_raw.index if hasattr(X_raw, 'index') else None
     )
 
-    return df_scaled
+    return df_scaled, scaler
 
 
 def extract_modal_features(df_scenario, n_modes=5):
@@ -126,6 +126,8 @@ def filter_df_to_delta_nodes(df, variable_names=VARIABLE_NAMES, top_pct=1, aggre
     delta_nodes = {}
     diffs = {}
 
+    assert type(variable_names) == list, "variable_names must be a list of strings"
+
     # Filter variable names to only those present in the df
     variable_names = [var for var in variable_names if var in df.columns]
 
@@ -205,7 +207,9 @@ def filter_df_to_delta_nodes(df, variable_names=VARIABLE_NAMES, top_pct=1, aggre
     df["delta_health"] = delta_health
 
     # Ensure healthy rows remain healthy
-    assert np.all(df[df["health"] == 1]["delta_health"] == 1)
+    # Ensure rows from healthy scenarios (damage level == 0) remain marked healthy
+    healthy_scenarios = [s for s in df["scenario"].unique() if scenario_number_to_combination(s)[3] == 0]
+    assert np.all(df[df["scenario"].isin(healthy_scenarios)]["delta_health"] == 1)
 
     return df, delta_nodes, diffs
 
