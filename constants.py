@@ -97,6 +97,13 @@ REGION_BEAMS = {
     6: [14, 15, 107, 13, 12, 104, 10, 11, 101],
 }
 _beam_df = pd.read_csv("all_beam_nodes_annot.csv")
+NODES_TO_BEAMS = {}
+for _, row in _beam_df.iterrows():
+    beam_num = int(row["Beam"])
+    node_num = int(row["Node"])
+    if node_num in NODES_TO_BEAMS:
+        raise ValueError(f"Node {node_num} already in NODES_TO_BEAMS!")
+    NODES_TO_BEAMS[node_num] = beam_num
 DEFECTIVE_NODES_BY_REGION = {} 
 for region, beam_nums in REGION_BEAMS.items():
     DEFECTIVE_NODES_BY_REGION[region] = _beam_df[_beam_df["Beam"].isin(beam_nums)]["Node"].unique().tolist()

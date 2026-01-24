@@ -260,14 +260,15 @@ def read_test_case(
                                               how='outer'), df_vars)
     # Check that data has been preserved
     for df in df_vars:
-        for var_name in VARIABLE_NAMES:
+        for var in VARIABLES:
+            var_name = VARIABLE_NAMES[var]
             if var_name in df.columns:
                   merged = pd.merge(df[shared_cols + [var_name]], merged_df[shared_cols + [var_name]],
                             on=shared_cols, how='inner')
                   assert len(merged) == len(df)
 
     # Re-order columns
-    merged_df = merged_df[shared_cols + VARIABLE_NAMES]
+    merged_df = merged_df[shared_cols + [VARIABLE_NAMES[var] for var in VARIABLES]]
 
     return merged_df
 
@@ -498,7 +499,7 @@ def get_data_variable_aggregated(
             df_vars.loc[~valid_deformation_mask, invalid_cols] = np.nan
             
     # Re-order columns
-    df_vars = df_vars[shared_cols + VARIABLE_NAMES]
+    df_vars = df_vars[shared_cols + [VARIABLE_NAMES[var] for var in VARIABLES]]
 
     return df_vars
 
@@ -759,17 +760,9 @@ def reshape_multi_variable_to_wide_nodes(
     import pandas as pd
 
     if value_cols is None:
-        value_cols = [
-            "TotalDeformation",
-            "DirectionalDeformation_X_axis",
-            "DirectionalDeformation_Y_axis",
-            "DirectionalDeformation_Z_axis",
-            "EquivalentStress",
-            "ShearStress_XY",
-            "ShearStress_XZ",
-            "ShearStress_YZ",
-        ]
+        value_cols = VARIABLE_NAMES.copy()
         value_cols = [c for c in value_cols if c in df.columns]
+    value_cols = list(value_cols)
 
     y_present = (y_var_name in df.columns)
 
