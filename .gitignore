@@ -4,6 +4,9 @@ Data2/
 data/
 visualization/
 
+*.h5
+*.keras
+
 # Python
 __pycache__/
 *.py[cod]

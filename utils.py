@@ -122,6 +122,7 @@ def read_data_file(
     region: int = 0,
     variable: int = 0,
     filter_out_invalid_nodes: bool = True,
+    filter_negative_total_deformation: bool = False,
     melt_time: bool = True,
 ):
     """Reads data according to format and provides the data-frame as-is, with
@@ -191,17 +192,21 @@ def read_data_file(
 
     df = add_node_locations(df)
 
+    # filter_node_numbers = set(VALID_NODE_NUMBERS)
+    filter_node_numbers = set(X_BEAM_NODES).union(I_BEAM_NODES)
+
     # Identify nodes with missing coordinates
     if filter_out_invalid_nodes:
         
-        df = df[df["Node Number"].isin(VALID_NODE_NUMBERS)]
+        # Take only filtered nodes
+        df = df[df["Node Number"].isin(filter_node_numbers)]
 
         # Put stress to 0
         # Identify nodes with missing stress values
         stress_variables = list(ORIGINAL_VARIABLES.values())[4:] 
         stress_cols = [col for col in df.columns if any(var in col for var in stress_variables)]
-        df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols] = \
-            df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols].fillna(0)
+        # df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols] = \
+            # df.loc[df["Node Number"].isin(NODES_MISSING_STRESS), stress_cols].fillna(0)
 
         # Check that all nodes have coordinates and loads
         missing_coords_nodes = df[df[["X", "Y", "Z"]].isnull().any(axis=1)]["Node Number"].unique()
@@ -209,7 +214,7 @@ def read_data_file(
             raise ValueError(f"{len(missing_coords_nodes)} nodes are missing coordinates after filtering.")
         missing_loads_nodes = df[df.isnull().any(axis=1)]["Node Number"].unique()
         if len(missing_loads_nodes) > 0:
-            raise ValueError(f"{len(missing_loads_nodes)} nodes are missing load data after filtering.")
+            print(f"{len(missing_loads_nodes)} nodes are missing load data after filtering.")
 
     # Melt time columns into a single column
     if melt_time:
@@ -229,11 +234,21 @@ def read_data_file(
         df_melted.drop(columns=["variable"],inplace=True)
 
         # Check that data contains all valid node numbers
-        missing_nodes = set(VALID_NODE_NUMBERS) - set(df_melted["Node Number"].unique())
+        missing_nodes = set(filter_node_numbers) - set(df_melted["Node Number"].unique())
         if len(missing_nodes) > 0 and filter_out_invalid_nodes:
             raise ValueError(f"Data for variable {var_name} is missing node numbers: {missing_nodes}")
 
         df = df_melted
+        del df_melted
+    
+    if filter_negative_total_deformation:
+        # Put negative total deformation to nan
+        if VARIABLE_NAMES[variable] == "TotalDeformation":
+            df.loc[df["TotalDeformation"] < 0, "TotalDeformation"] = np.nan
+
+    # Check that each time value has same count
+    time_counts = df["time"].value_counts()
+    assert time_counts.nunique() == 1, "Not all time values have the same count"
 
     return df
 
@@ -265,76 +280,69 @@ def get_variable_difference_between_combinations(comb1: tuple, comb2: tuple, top
     return get_variable_difference_between_dataframes(df1, df2, var_name, top_pct=top_pct)
 
 
-def get_variable_difference_between_dataframes(df1, df2, var_name: str, top_pct: float = 1.0):
+def get_variable_difference_between_dataframes(
+    df1, 
+    df2, 
+    var_name: str, 
+    top_pct: float = 1.0,
+    aggregate_by_time: bool = True,
+):
     """
-    Computes the difference in the variable between two data_frames and keeps only the top nodes
+    Computes the difference in the variable between two dataframes and keeps only the top nodes
     by per-node max absolute difference over time.
-    NOTE: If a node is delta in one time-step, it will be kept for all time-steps.
-    
-    Args:
-        df1, df2 (pd.DataFrame): Each a data-frame containing the same variable.
-        top_pct (float):
-            - If 0 < top_pct <= 1.0: keep the top fraction of nodes (ceil(top_pct * num_nodes_with_nonzero_diff)).
-            - If top_pct > 1.0: keep the top N nodes.
-    Returns:
-        pd.DataFrame: DataFrame with Node Number, time, X, Y, Z, and the difference in the variable.
-                      Rows from non-selected nodes have the variable set to NaN.
+
+    CHANGE vs old behavior:
+    - Even if a node is selected as "top", only the time-steps where the diff is non-zero are kept.
+      All other time-steps for that node are set to NaN.
+    - If a row's diff is zero, it becomes NaN (so only non-zero deltas remain non-NaN).
     """
-    # Ensure both dataframes have the same columns
     if set(df1.columns) != set(df2.columns):
         raise ValueError(f"DataFrames have different columns: {set(df1.columns) ^ set(df2.columns)}")
 
-    # Keep only relevant columns
     keep_cols = ["Node Number", "time", "X", "Y", "Z", var_name]
     df1 = df1[keep_cols]
     df2 = df2[keep_cols]
 
-    # Merge on metadata
     merge_cols = ["Node Number", "time", "X", "Y", "Z"]
     merged = pd.merge(df1, df2, on=merge_cols, suffixes=('_1', '_2'), how='inner')
 
-    # Safety check
-    if not (merged[f"{var_name}_1"].shape == merged[f"{var_name}_2"].shape and merged[f"{var_name}_1"].index.equals(merged[f"{var_name}_2"].index)):
-        raise ValueError("DataFrames to subtract do not have matching shapes or indices.")
-
-    # Drop rows where either side is NaN for the target variable
     valid_rows = merged[f"{var_name}_1"].notna() & merged[f"{var_name}_2"].notna()
     merged = merged[valid_rows].copy()
     if merged.empty:
         merged[var_name] = np.nan
         return merged
-    
-    # Compute difference
+
+    # Compute diff
     merged[var_name] = merged[f"{var_name}_1"] - merged[f"{var_name}_2"]
-    abs_diff = np.abs(merged[var_name])
+    abs_diff = merged[var_name].abs()
 
     # Per-node aggregate (max over time)
     per_node_max = abs_diff.groupby(merged["Node Number"]).max()
 
-    # Consider only nodes with any non-zero difference
+    # Nodes with any non-zero diff
     nonzero_nodes = per_node_max[per_node_max > 0]
     if nonzero_nodes.empty:
         merged[var_name] = np.nan
         return merged
-    
+
     # Determine how many nodes to keep
     if 0 < top_pct < 1.0:
-        k = int(np.ceil(top_pct * len(nonzero_nodes)))
-        k = max(1, k)
-        # Select top nodes by max abs diff
+        k = max(1, int(np.ceil(top_pct * len(nonzero_nodes))))
         top_nodes = nonzero_nodes.sort_values(ascending=False).head(k).index
     elif top_pct == 1.0:
-        # Select all nonzero nodes
         top_nodes = nonzero_nodes.index
     else:
         k = int(top_pct)
         k = max(1, min(k, len(nonzero_nodes)))
         top_nodes = nonzero_nodes.sort_values(ascending=False).head(k).index
 
-    # Mask out non-top nodes
-    keep_mask = merged["Node Number"].isin(top_nodes)
-    merged.loc[~keep_mask, var_name] = np.nan
+    # NEW: only keep non-zero diffs, and only for selected nodes
+    if aggregate_by_time:
+        keep_mask = merged["Node Number"].isin(top_nodes)
+    else:
+        keep_mask = merged["Node Number"].isin(top_nodes) & (merged[var_name] != 0)
 
+    merged.loc[~keep_mask, var_name] = np.nan
     return merged
 
 
@@ -342,6 +350,7 @@ def get_data_variable_aggregated(
     scenario_combination: tuple,
     filter_out_invalid_nodes: bool = True,
     drop_invalid_nodes: bool = False,
+    filter_negative_total_deformation: bool = False,
 ):
     """
     Reads all data files from one scenario of load, train_config, season, and region and takes all variables
@@ -363,7 +372,11 @@ def get_data_variable_aggregated(
     for same_variable_combination in combinations_grouped_by_variable:
 
         # Get data file for current combination
-        df = read_data_file(*same_variable_combination, filter_out_invalid_nodes=filter_out_invalid_nodes)
+        df = read_data_file(
+            *same_variable_combination, 
+            filter_out_invalid_nodes=filter_out_invalid_nodes,
+            filter_negative_total_deformation=filter_negative_total_deformation,
+        )
 
         dfs_variables.append(df)
 
@@ -384,7 +397,7 @@ def get_data_variable_aggregated(
     # Filter out deformations where the total deformation is negative or
     #   where the root of the sum of squares of the directional deformations is different
     #   from the total deformation by a large margin
-    if filter_out_invalid_nodes and "TotalDeformation" in df_vars.columns:
+    if filter_negative_total_deformation and "TotalDeformation" in df_vars.columns:
         valid_deformation_mask = (
             (df_vars["TotalDeformation"] >= 0) &
             (np.abs(
@@ -487,7 +500,8 @@ def get_data_variable_and_region_and_season_aggregated(
 
 
 def get_data_variable_and_region_and_season_and_load_aggregated(
-    scenario_combination: tuple
+    scenario_combination: tuple,
+    drop_invalid_nodes: bool = False,
 ):
     """
     Reads all data files from one scenario of train_config and aggregates across all loads, seasons, regions, and variables.
@@ -504,7 +518,10 @@ def get_data_variable_and_region_and_season_and_load_aggregated(
         for season in SEASONS.keys():
             for region in REGIONS.keys():
                 try:
-                    df = get_data_variable_aggregated((train_config, load, season, region))
+                    df = get_data_variable_aggregated(
+                        (train_config, load, season, region), 
+                        drop_invalid_nodes=drop_invalid_nodes
+                    )
                     all_dfs.append(df)
                 except FileNotFoundError:
                     print(f"Skipping missing file for scenario: {combination_to_string((train_config, load, season, region, 0))}")
@@ -517,7 +534,11 @@ def get_data_variable_and_region_and_season_and_load_aggregated(
     return df_all
 
 
-def get_data_all_aggregated(filter_invalid_nodes: bool = True, drop_invalid_nodes: bool = False):
+def get_data_all_aggregated(
+    filter_invalid_nodes: bool = True,
+    drop_invalid_nodes: bool = False,
+    filter_negative_total_deformation: bool = False,
+):
     """
     Reads all data files for all combinations of season, load, train_config, health, and variable,
     and merges them into a single DataFrame.
@@ -536,7 +557,8 @@ def get_data_all_aggregated(filter_invalid_nodes: bool = True, drop_invalid_node
                         df_vars = get_data_variable_aggregated(
                             scenario, 
                             filter_out_invalid_nodes=filter_invalid_nodes,
-                            drop_invalid_nodes=drop_invalid_nodes
+                            drop_invalid_nodes=drop_invalid_nodes,
+                            filter_negative_total_deformation=filter_negative_total_deformation,
                             )
                         all_dfs.append(df_vars)
                     except FileNotFoundError as e:
@@ -640,17 +662,18 @@ def filter_outliers(df: pd.DataFrame, lower_pct=0.001, upper_pct=1):
 
 def reshape_multi_variable_to_wide_nodes(
     df,
+    y_var_name: str,
     value_cols=None,
     all_nodes=None,
     fill_value=None,
     fail_on_missing: bool = True,
-    sanity_check_rows: int = 2000,   # 0 disables; avoids the gigantic melt/merge
+    sanity_check_rows: int = 200,   # 0 disables; avoids the gigantic melt/merge
     downcast_values: bool = False,   # True -> tries to downcast numeric value cols to save RAM
 ):
     """
     Memory-efficient reshape:
       rows   = (scenario, Node Number)
-      cols   = health, X, Y, Z + <Variable>_t<time>
+      cols   = health/delta_health, X, Y, Z + <Variable>_t<time>
 
     Notes:
       - If all_nodes is provided, we *expand* to scenarios x all_nodes (can increase RAM!).
@@ -672,7 +695,7 @@ def reshape_multi_variable_to_wide_nodes(
         ]
 
     # ---- validate columns ----
-    required = {"scenario", "Node Number", "time", "health", "X", "Y", "Z"}
+    required = {"scenario", "Node Number", "time", y_var_name, "X", "Y", "Z"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
@@ -683,7 +706,7 @@ def reshape_multi_variable_to_wide_nodes(
         raise ValueError("No value columns found in dataframe.")
 
     # minimal view of needed columns (avoid df.copy())
-    use_cols = ["scenario", "Node Number", "time", "health", "X", "Y", "Z"] + value_cols
+    use_cols = ["scenario", "Node Number", "time", y_var_name, "X", "Y", "Z"] + value_cols
     df_use = df.loc[:, use_cols]
 
     # ---- unique times, ordered ----
@@ -740,7 +763,7 @@ def reshape_multi_variable_to_wide_nodes(
     # ---- metadata ----
     meta = (
         df_use.groupby(["scenario", "Node Number"], sort=False, observed=True)[
-            ["health", "X", "Y", "Z"]
+            [y_var_name, "X", "Y", "Z"]
         ]
         .first()
     )
@@ -796,7 +819,7 @@ def reshape_multi_variable_to_wide_nodes(
     combined = pd.concat([meta, wide], axis=1).reset_index()
 
     # ---- missing check (cheap; no melts) ----
-    check_cols = ["scenario", "Node Number", "health", "X", "Y", "Z"] + var_time_cols
+    check_cols = ["scenario", "Node Number", y_var_name, "X", "Y", "Z"] + var_time_cols
     check_cols = [c for c in check_cols if c in combined.columns]
 
     missing_counts = combined[check_cols].isna().sum()
@@ -887,7 +910,7 @@ def reshape_multi_variable_to_wide_nodes(
     )
 
     # ---- order columns ----
-    col_order = ["scenario", "Node Number", "health", "X", "Y", "Z"] + var_time_cols
+    col_order = ["scenario", "Node Number", y_var_name, "X", "Y", "Z"] + var_time_cols
     combined = combined[[c for c in col_order if c in combined.columns]]
 
     return combined

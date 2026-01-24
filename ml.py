@@ -107,7 +107,7 @@ def apply_bridge_pca(df, n_components=10):
 
 
 
-def filter_df_to_delta_nodes(df, variable_names=VARIABLE_NAMES, top_pct=1):
+def filter_df_to_delta_nodes(df, variable_names=VARIABLE_NAMES, top_pct=1, aggregate_by_time=False):
     """
     Mark delta nodes instead of rejecting nodes.
 
@@ -125,6 +125,9 @@ def filter_df_to_delta_nodes(df, variable_names=VARIABLE_NAMES, top_pct=1):
     dummy = 0
     delta_nodes = {}
     diffs = {}
+
+    # Filter variable names to only those present in the df
+    variable_names = [var for var in variable_names if var in df.columns]
 
     # Precompute fast access to rows per scenario (dict: scenario -> ndarray of row indices)
     idx_by_scenario = df.groupby("scenario", sort=False).indices
@@ -160,7 +163,7 @@ def filter_df_to_delta_nodes(df, variable_names=VARIABLE_NAMES, top_pct=1):
 
             for var_idx, var_name in enumerate(variable_names):
                 df_diff = get_variable_difference_between_dataframes(
-                    df_healthy, df_damaged, var_name=var_name, top_pct=top_pct
+                    df_healthy, df_damaged, var_name=var_name, top_pct=top_pct, aggregate_by_time=aggregate_by_time
                 )
                 key = (*base, damage_level, var_idx)
                 diffs[key] = df_diff
@@ -169,7 +172,10 @@ def filter_df_to_delta_nodes(df, variable_names=VARIABLE_NAMES, top_pct=1):
                     raise KeyError(f"{var_name} not in {df_diff.columns}")
 
                 # The imperfect mask contains delta nodes that are delta in at least *one time-step*
-                imperfect_mask = df_diff[var_name].notna()
+                if aggregate_by_time:
+                    imperfect_mask = df_diff[var_name].notna()
+                else:
+                    imperfect_mask = df_diff[var_name].notna() & (df_diff[var_name] != 0)
                 if not imperfect_mask.any():
                     delta_nodes[key] = df_diff.loc[[], "Node Number"]  # empty, preserves dtype/index style
                     continue
@@ -195,7 +201,7 @@ def filter_df_to_delta_nodes(df, variable_names=VARIABLE_NAMES, top_pct=1):
                 # Vectorized membership test (hash-based) over the precomputed df_key
                 mask = df_key.isin(sel_key)
                 delta_health[mask] = 0
-                
+
     df["delta_health"] = delta_health
 
     # Ensure healthy rows remain healthy

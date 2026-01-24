@@ -136,6 +136,14 @@ with open("nodes_missing_deformation.txt", "r") as f:
     # NODES_MISSING_DEFORMATION = {int(line.strip()) for line in f.readlines()}
     NODES_MISSING_DEFORMATION = {int(line.strip()) for line in f.readlines()}
 
+with open("X_beam_nodes.txt", "r") as f:
+    global X_BEAM_NODES
+    X_BEAM_NODES = {int(line.strip()) for line in f.readlines()}
+
+with open("I_beam_nodes.txt", "r") as f:
+    global I_BEAM_NODES
+    I_BEAM_NODES = {int(line.strip()) for line in f.readlines()}
+
 # Valid: have stress (and therefore coordinates and deformation)
 #   We are filtering out nodes all nodes missing stress (these have weird deformation values)
 VALID_NODE_NUMBERS = [nn for nn in NODE_NUMBERS if nn not in (NODES_MISSING_STRESS.union(NODES_MISSING_DEFORMATION))]
