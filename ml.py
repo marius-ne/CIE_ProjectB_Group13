@@ -106,81 +106,100 @@ def apply_bridge_pca(df, n_components=10):
     return X_pca, y, pca, scaler
 
 
+
 def filter_df_to_delta_nodes(df, variable_names=VARIABLE_NAMES, top_pct=1):
     """
     Mark delta nodes instead of rejecting nodes.
 
-    - Adds a column "delta_health": 0 where node is a delta (unhealthy), 1 otherwise.
-    - Adds (optionally) a "scenario_combination" column if a mapping function
-        `map_scenario_to_combination` is available in globals(); otherwise the original
-        scenario value is copied into that column.
-    - Delta determination: for each (train_config, load, season) base scenario, use the
-        health==0 rows as the healthy baseline and compare each damaged level (1..6)
-        to that baseline using get_variable_difference_between_dataframes for each
-        variable in variable_names. Any node flagged as delta for any variable is
-        marked delta (delta_health=0) for all rows matching that damaged scenario.
-    - Returns the full dataframe (no rows removed), the delta_nodes dict and diffs dict.
+    Adds column "delta_health": 0 where row is flagged delta, 1 otherwise.
+    Returns (df, delta_nodes, diffs).
     """
-    # default: all healthy
-    df['delta_health'] = 1
+    # Work on the same df object (as your original did). If you want, uncomment:
+    # df = df.copy()
 
-    # Dummy 
+    n = len(df)
+
+    # Use a small dtype to save memory (1 byte per row instead of 8)
+    delta_health = np.ones(n, dtype=np.int8)
+
     dummy = 0
-
     delta_nodes = {}
     diffs = {}
 
-    # build set of unique base scenarios (train_config, load, season)
-    scenarios = df['scenario'].unique()
-    combos = [scenario_number_to_combination(s) for s in scenarios]
+    # Precompute fast access to rows per scenario (dict: scenario -> ndarray of row indices)
+    idx_by_scenario = df.groupby("scenario", sort=False).indices
+
+    # Precompute a single key index for the entire df: (Node Number, scenario, time)
+    df_key = pd.MultiIndex.from_arrays(
+        [df["Node Number"].to_numpy(), df["scenario"].to_numpy(), df["time"].to_numpy()],
+        names=["Node Number", "scenario", "time"],
+    )
+
+    # Unique base scenarios (train_config, load, season)
+    scenario_nums = df["scenario"].unique()
+    combos = [scenario_number_to_combination(s) for s in scenario_nums]
     base_scenarios = {combo[:3] for combo in combos}
 
     for base in base_scenarios:
-        # healthy scenario number and dataframe
         healthy_scenario_num = combination_to_scenario_number((*base, 0, dummy))
-        df_healthy = df[df['scenario'] == healthy_scenario_num]
-        if df_healthy.empty:
-            # no healthy baseline -> skip this base scenario
+        healthy_idx = idx_by_scenario.get(healthy_scenario_num)
+        if healthy_idx is None or len(healthy_idx) == 0:
             continue
+        df_healthy = df.loc[healthy_idx]
 
-        # iterate damage levels
         for damage_level in range(1, 7):
             damaged_scenario_num = combination_to_scenario_number((*base, damage_level, dummy))
-            df_damaged = df[df['scenario'] == damaged_scenario_num]
-            if df_damaged.empty:
+            damaged_idx = idx_by_scenario.get(damaged_scenario_num)
+            if damaged_idx is None or len(damaged_idx) == 0:
                 continue
+            df_damaged = df.loc[damaged_idx]
 
-            nodes_for_damage = set()
+            # Collect all flagged (Node Number, scenario, time) for this damaged scenario across variables
+            sel_nodes_list = []
+            sel_times_list = []
 
             for var_idx, var_name in enumerate(variable_names):
                 df_diff = get_variable_difference_between_dataframes(
                     df_healthy, df_damaged, var_name=var_name, top_pct=top_pct
                 )
-
                 key = (*base, damage_level, var_idx)
                 diffs[key] = df_diff
 
-                # determine nodes flagged as delta for this variable
-                if var_name in df_diff.columns:
-                    nodes = df_diff[~df_diff[var_name].isna()]["Node Number"].unique()
-                else:
-                    # fallback: assume last column contains the diff indicator
-                    nodes = df_diff[~df_diff.iloc[:, -1].isna()]["Node Number"].unique()
+                if var_name not in df_diff.columns:
+                    raise KeyError(f"{var_name} not in {df_diff.columns}")
 
-                delta_nodes[key] = nodes
-                nodes_for_damage.update(nodes.tolist())
+                # The imperfect mask contains delta nodes that are delta in at least *one time-step*
+                imperfect_mask = df_diff[var_name].notna()
+                if not imperfect_mask.any():
+                    delta_nodes[key] = df_diff.loc[[], "Node Number"]  # empty, preserves dtype/index style
+                    continue
 
-            # mark all rows for this damaged scenario & node as delta (0)
-            if nodes_for_damage:
-                mask = (
-                    (df['scenario'] == damaged_scenario_num) &
-                    (df['health'] == damage_level) &
-                    (df['Node Number'].isin(nodes_for_damage))
+                nodes = df_diff.loc[imperfect_mask, "Node Number"].to_numpy()
+                times = df_diff.loc[imperfect_mask, "time"].to_numpy()
+
+                delta_nodes[key] = df_diff.loc[imperfect_mask, "Node Number"]
+
+                sel_nodes_list.append(nodes)
+                sel_times_list.append(times)
+
+            # One vectorized assignment per damaged scenario (instead of per variable)
+            if sel_nodes_list:
+                sel_nodes = np.concatenate(sel_nodes_list)
+                sel_times = np.concatenate(sel_times_list)
+
+                sel_key = pd.MultiIndex.from_arrays(
+                    [sel_nodes, np.full(sel_nodes.shape, damaged_scenario_num), sel_times],
+                    names=["Node Number", "scenario", "time"],
                 )
-                df.loc[mask, 'delta_health'] = 0
 
-    # ensure healthy rows remain healthy (explicit)
-    df.loc[df['health'] == 0, 'delta_health'] = 1
+                # Vectorized membership test (hash-based) over the precomputed df_key
+                mask = df_key.isin(sel_key)
+                delta_health[mask] = 0
+                
+    df["delta_health"] = delta_health
+
+    # Ensure healthy rows remain healthy
+    assert np.all(df[df["health"] == 1]["delta_health"] == 1)
 
     return df, delta_nodes, diffs
 

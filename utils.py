@@ -269,6 +269,7 @@ def get_variable_difference_between_dataframes(df1, df2, var_name: str, top_pct:
     """
     Computes the difference in the variable between two data_frames and keeps only the top nodes
     by per-node max absolute difference over time.
+    NOTE: If a node is delta in one time-step, it will be kept for all time-steps.
     
     Args:
         df1, df2 (pd.DataFrame): Each a data-frame containing the same variable.
