@@ -101,7 +101,7 @@ def plot_bridge_3d_structure(highlight_nodes=None, color_scale: dict=None, s: in
             margin=dict(l=0, r=0, b=0, t=40)
         )
     fig.write_html("visualization/bridge_structure_3d.html", auto_open=True)
-    fig.show()
+    # fig.show()
 
 
 def plot_bridge_3d_variable_over_time_combination(combination, s: int = 4, log_scale: bool = False):

@@ -220,7 +220,8 @@ def read_test_case(
 
     # Construct filename from scenario according to the folder structure
     base_path = Path(TEST_FOLDER_PATH)
-    base_path /= f"Case_{test_case_num}" / "Results" 
+    base_path /= f"Case_{test_case_num}"
+    base_path /= "Results"
 
     filter_node_numbers = FILTER_NODE_NUMBERS
 
@@ -254,7 +255,7 @@ def read_test_case(
     # Concatenating all variables into a single data frame
     # -> we do an OUTER join, meaning all keys are kept (A U B)
     #   this should be safe, node numbers and the other shared columns are kept
-    shared_cols = ["Node Number","health","scenario","X","Y","Z","time"]
+    shared_cols = ["Node Number","X","Y","Z","time"]
     merged_df = functools.reduce(lambda left,right: pd.merge(left,right,on=shared_cols,
                                               how='outer'), df_vars)
     # Check that data has been preserved
@@ -264,6 +265,9 @@ def read_test_case(
                   merged = pd.merge(df[shared_cols + [var_name]], merged_df[shared_cols + [var_name]],
                             on=shared_cols, how='inner')
                   assert len(merged) == len(df)
+
+    # Re-order columns
+    merged_df = merged_df[shared_cols + VARIABLE_NAMES]
 
     return merged_df
 
@@ -394,8 +398,9 @@ def _melt_time_in_df(df: pd.DataFrame, variable: str, filter_node_numbers: list)
     var_name = VARIABLE_NAMES[variable]
 
     # Turn the variable column into a single one and add a new time column
+    id_vars = ["Node Number","X","Y","Z"] + (["health","scenario"] if "health" in df.columns else [])
     df_melted = df.melt(
-        id_vars=["Node Number","health","scenario","X","Y","Z",],
+        id_vars=id_vars,
         var_name="variable",
         value_name=var_name
     )
