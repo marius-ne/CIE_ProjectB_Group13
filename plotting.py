@@ -21,7 +21,8 @@ from utils import read_data_file, select_df_subset, combination_to_string, VARIA
 def plot_bridge_3d_structure(
     highlight_nodes=None, 
     color_scale: dict=None, 
-    s: int=4, annotations: dict=None,
+    s: int=4, 
+    annotations: dict=None,
     highlight_color: str="red",
     title: str="Bridge Structure 3D"
 ):    
@@ -44,7 +45,10 @@ def plot_bridge_3d_structure(
             if pd.isna(val):
                 txt = f"Node: {nn}<br>Value: NaN"
             else:
-                txt = f"Node: {nn}<br>Value: {val:.3e}"
+                if type(val) != str:
+                    txt = f"Node: {nn}<br>Value: {val:.3e}"
+                else:
+                    txt = f"Node: {nn}<br>Value: {val}"
             if annotations and nn in annotations:
                 txt += f"<br>{annotations[nn]}"
             hover_text.append(txt)
@@ -448,7 +452,7 @@ def plot_nodes_time_series(df, node_numbers, variable, scenario=None, health=Non
         node_numbers = [node_numbers]
 
     n_nodes = len(node_numbers)
-    fig, axes = plt.subplots(n_nodes, 1, figsize=(15, 4 * n_nodes), sharex=True)
+    fig, axes = plt.subplots(n_nodes, 1, figsize=(8, 4 * n_nodes), sharex=True)
     if n_nodes == 1:
         axes = [axes]
 
@@ -472,6 +476,7 @@ def plot_nodes_time_series(df, node_numbers, variable, scenario=None, health=Non
         ax.legend()
         ax.grid(True, linestyle='--', alpha=0.5)
     plt.tight_layout()
+    plt.savefig("visualization/node_time_series.svg", dpi=1000)
     plt.show()
 
 

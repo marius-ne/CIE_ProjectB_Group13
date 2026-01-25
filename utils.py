@@ -517,7 +517,7 @@ def get_data_variable_aggregated(
 
 def get_data_variable_and_region_aggregated(
     scenario_combination: tuple,
-    filter_invalid_nodes: bool = True,
+    filter_out_invalid_nodes: bool = True,
     drop_invalid_nodes: bool = False,
 ):
     """
@@ -538,7 +538,7 @@ def get_data_variable_and_region_aggregated(
 
         df_vars = get_data_variable_aggregated(
             (train_config, load, season, region),
-            filter_out_invalid_nodes=filter_invalid_nodes,
+            filter_out_invalid_nodes=filter_out_invalid_nodes,
             drop_invalid_nodes=drop_invalid_nodes,
         )
 
