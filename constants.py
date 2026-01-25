@@ -104,6 +104,13 @@ for _, row in _beam_df.iterrows():
     if node_num in NODES_TO_BEAMS:
         raise ValueError(f"Node {node_num} already in NODES_TO_BEAMS!")
     NODES_TO_BEAMS[node_num] = beam_num
+BEAMS_TO_NODES = {}
+for _, row in _beam_df.iterrows():
+    beam_num = int(row["Beam"])
+    node_num = int(row["Node"])
+    if beam_num not in BEAMS_TO_NODES:
+        BEAMS_TO_NODES[beam_num] = []
+    BEAMS_TO_NODES[beam_num].append(node_num)
 DEFECTIVE_NODES_BY_REGION = {} 
 for region, beam_nums in REGION_BEAMS.items():
     DEFECTIVE_NODES_BY_REGION[region] = _beam_df[_beam_df["Beam"].isin(beam_nums)]["Node"].unique().tolist()

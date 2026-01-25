@@ -1,17 +1,21 @@
 
+import networkx as nx
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
 pio.renderers.default = "notebook"
 
+from pathlib import Path
+from collections import defaultdict
 from ipywidgets import interact, FloatSlider
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 # Own imports
 from constants import COORDS_DF
-from utils import read_data_file, select_df_subset, combination_to_string, VARIABLE_NAMES
+from utils import read_data_file, select_df_subset, combination_to_string, VARIABLE_NAMES, combinations_variable_agg
+
 
 
 def plot_bridge_3d_structure(
@@ -468,3 +472,235 @@ def plot_nodes_time_series(df, node_numbers, variable, scenario=None, health=Non
         ax.grid(True, linestyle='--', alpha=0.5)
     plt.tight_layout()
     plt.show()
+
+
+def plot_scenario_tree(
+    train_combinations,
+    test_combinations,
+):
+    """
+    Plots a hierarchical tree of scenarios based on train_config, load, season, and region.
+    Nodes are colored based on whether they are in the training set, test set, or neither.
+
+    Args:
+        train_combinations: List of tuples (train_config, load, season, region) in training set.
+        test_combinations: List of tuples (train_config, load, season, region) in test set.
+        combinations_variable_agg: List of all scenario combinations (train_config, load, season, region).
+        """
+    # Optional: colors (edit as you like)
+    COLOR_TRAIN = "#2ca02c"   # green
+    COLOR_TEST  = "#d62728"   # red
+    COLOR_OTHER = "#e8f0fe"   # default (light blue)
+    COLOR_BOTH  = "#9467bd"   # if a region tuple appears in both sets (shouldn't happen ideally)
+
+    # --- Build scenario metadata table ---
+    meta_df = pd.DataFrame(
+        combinations_variable_agg,
+        columns=["train_config", "load", "season", "region"],
+    )
+    meta_df["scenario"] = np.arange(1, len(meta_df) + 1)
+
+    required_cols = ["train_config", "load", "season", "region", "scenario"]
+    missing = [c for c in required_cols if c not in meta_df.columns]
+    if missing:
+        raise ValueError(f"Missing columns: {missing}")
+
+    # --- Normalize input sets to ensure hashable tuples of python ints ---
+    def _norm_combo(c):
+        # make sure numpy types don't cause surprises in set membership
+        return (int(c[0]), int(c[1]), int(c[2]), int(c[3]))
+
+    train_combinations = {_norm_combo(c) for c in train_combinations}
+    test_combinations  = {_norm_combo(c) for c in test_combinations}
+
+    # --- Build tree structure WITHOUT scenario leaves ---
+    children = defaultdict(list)
+    root = ("root",)
+
+    def add_edge(parent, child):
+        if child not in children[parent]:
+            children[parent].append(child)
+
+    grp = (
+        meta_df.groupby(["train_config", "load", "season", "region"])["scenario"]
+        .apply(list)
+        .reset_index()
+    )
+
+    for _, r in grp.iterrows():
+        tc = ("train",  int(r["train_config"]))
+        ld = ("load",   int(r["train_config"]), int(r["load"]))
+        ss = ("season", int(r["train_config"]), int(r["load"]), int(r["season"]))
+        rg = ("region", int(r["train_config"]), int(r["load"]), int(r["season"]), int(r["region"]))
+
+        add_edge(root, tc)
+        add_edge(tc, ld)
+        add_edge(ld, ss)
+        add_edge(ss, rg)
+
+    # --- Build graph ---
+    G = nx.DiGraph()
+    for parent, ch in children.items():
+        for c in sorted(ch, key=str):
+            G.add_edge(parent, c)
+
+    # --- Layout: horizontal tidy tree (x=depth, y=leaf order) ---
+    pos = {}
+
+    layer_of = {"root": 0, "train": 1, "load": 2, "season": 3, "region": 4}
+    def node_layer(n):
+        return layer_of[n[0]]
+
+    def layout_horizontal(node, depth=0, y=0):
+        kids = children.get(node, [])
+        if not kids:
+            pos[node] = (depth, y)
+            return y + 1
+        ys = []
+        for k in sorted(kids, key=str):
+            y = layout_horizontal(k, depth + 1, y)
+            ys.append(pos[k][1])
+        pos[node] = (depth, float(np.mean(ys)))
+        return y
+
+    layout_horizontal(root)
+
+    # flip y so it reads nicely top->bottom
+    ymax = max(v[1] for v in pos.values())
+    for n in pos:
+        x, y = pos[n]
+        pos[n] = (x, ymax - y)
+
+    # increase vertical spacing without changing topology
+    Y_SCALE = 10
+    for n in pos:
+        x, y = pos[n]
+        pos[n] = (x, y * Y_SCALE)
+
+    # --- Plot: slide-ready, no node labels ---
+    fig = plt.figure(figsize=(15, 12.0))
+    ax = plt.gca()
+    ax.set_axis_off()
+
+    # edges
+    nx.draw_networkx_edges(
+        G, pos, ax=ax, arrows=False,
+        width=1.0, alpha=0.25, edge_color="#333333"
+    )
+
+    # nodes grouped by layer
+    layer_nodes = {i: [] for i in range(5)}
+    for n in G.nodes:
+        layer_nodes[node_layer(n)].append(n)
+
+    node_sizes = {
+        0: 2500,  # root
+        1: 1500,  # train
+        2: 1000,  # load
+        3: 500,   # season
+        4: 25,    # region
+    }
+
+    # ---- Color logic for region nodes ----
+    def region_color(node):
+        # node is ("region", train_config, load, season, region)
+        combo = (int(node[1]), int(node[2]), int(node[3]), int(node[4]))
+        in_train = combo in train_combinations
+        in_test  = combo in test_combinations
+        if in_train and in_test:
+            return COLOR_BOTH
+        if in_train:
+            return COLOR_TRAIN
+        if in_test:
+            return COLOR_TEST
+        return COLOR_OTHER
+
+    # draw layers 0..3 with default color
+    for layer in range(4):
+        nx.draw_networkx_nodes(
+            G, pos,
+            nodelist=layer_nodes[layer],
+            node_size=node_sizes[layer],
+            node_color=COLOR_OTHER,
+            linewidths=0.0,
+            ax=ax,
+        )
+
+    # draw region layer with per-node colors
+    region_nodes = layer_nodes[4]
+    region_colors = [region_color(n) for n in region_nodes]
+    nx.draw_networkx_nodes(
+        G, pos,
+        nodelist=region_nodes,
+        node_size=node_sizes[4],
+        node_color=region_colors,
+        linewidths=0.0,
+        ax=ax,
+    )
+
+    # --- ONLY level-wise labels, centered on each column ---
+    level_labels = {1: "Train Config", 2: "Train Size", 3: "Season", 4: "Region"}
+
+    for layer, txt in level_labels.items():
+        ys_layer = [pos[n][1] for n in layer_nodes[layer]]
+        if not ys_layer:
+            continue
+        y_center = float(np.mean(ys_layer))
+        x_col = layer
+        ax.text(
+            x_col, y_center, txt,
+            fontsize=18, fontweight="bold",
+            ha="center", va="center",
+            alpha=0.9,
+            bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=2.0),
+            zorder=10
+        )
+
+    ys_root = [pos[n][1] for n in layer_nodes[0]]
+    ax.text(
+        0, float(np.mean(ys_root)), "Scenarios",
+        fontsize=20, fontweight="bold",
+        ha="center", va="center",
+        bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=2.0),
+        zorder=10
+    )
+
+    # --- Legend (optional but helpful) ---
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Line2D([0], [0], marker='o', color='w', label='Train',
+            markerfacecolor=COLOR_TRAIN, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='Validation',
+            markerfacecolor=COLOR_TEST, markersize=10),
+    ]
+    # only add BOTH if it occurs
+    if any((_norm_combo((n[1], n[2], n[3], n[4])) in train_combinations) and
+        (_norm_combo((n[1], n[2], n[3], n[4])) in test_combinations)
+        for n in region_nodes):
+        legend_handles.append(
+            Line2D([0], [0], marker='o', color='w', label='Train∩Test',
+                markerfacecolor=COLOR_BOTH, markersize=10)
+        )
+
+    ax.legend(handles=legend_handles, loc="upper center", frameon=True)
+
+    # tighten whitespace
+    xs = np.array([p[0] for p in pos.values()])
+    ys = np.array([p[1] for p in pos.values()])
+    pad_x = 0.6
+    pad_y = (ys.max() - ys.min()) * 0.04 + 0.8
+    ax.set_xlim(xs.min() - pad_x, xs.max() + 0.4)
+    ax.set_ylim(ys.min() - pad_y, ys.max() + pad_y)
+
+    # save tightly for PPT
+    out_dir = Path("visualization")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_dir / "scenario_hierarchy_tree_slide_clean_colored.svg", bbox_inches="tight", pad_inches=0.02)
+    plt.show()
+
+
+
+
+
+
+

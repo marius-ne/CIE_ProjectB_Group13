@@ -85,6 +85,7 @@ combinations_grouped_by_region = [
     combinations_grouped_by_variable[i:i + len(REGIONS)] for i in range(0, len(combinations_grouped_by_variable), len(REGIONS))
 ]
 combinations_region_agg = list(set([combo[0][0][:3] for combo in combinations_grouped_by_region]))
+combinations_variable_agg = list(set([combo[0][:4] for combo in combinations_grouped_by_variable]))
 
 def add_node_locations(df):
     """
@@ -756,6 +757,7 @@ def reshape_multi_variable_to_wide_nodes(
     value_cols=None,
     all_nodes=None,
     fill_value=None,
+    use_coords: bool = True,
     fail_on_missing: bool = True,
     sanity_check_rows: int = 200,   # 0 disables; avoids the gigantic melt/merge
     downcast_values: bool = False,   # True -> tries to downcast numeric value cols to save RAM
@@ -782,7 +784,10 @@ def reshape_multi_variable_to_wide_nodes(
     y_present = (y_var_name in df.columns)
 
     # ---- validate columns ----
-    required_base = {"scenario", "Node Number", "time", "X", "Y", "Z"}
+    if use_coords:
+        required_base = {"scenario", "Node Number", "time", "X", "Y", "Z"}
+    else:
+        required_base = {"scenario", "Node Number", "time"}
     missing_base = required_base - set(df.columns)
     if missing_base:
         raise ValueError(f"Missing required columns: {missing_base}")
@@ -793,7 +798,10 @@ def reshape_multi_variable_to_wide_nodes(
 
     # minimal view of needed columns (avoid df.copy())
     # include y only if it exists; we will add it as NaN later if missing
-    use_cols = ["scenario", "Node Number", "time", "X", "Y", "Z"] + ( [y_var_name] if y_present else [] ) + value_cols
+    if use_coords:
+        use_cols = ["scenario", "Node Number", "time", "X", "Y", "Z"] + ( [y_var_name] if y_present else [] ) + value_cols
+    else:
+        use_cols = ["scenario", "Node Number", "time"] + ( [y_var_name] if y_present else [] ) + value_cols
     df_use = df.loc[:, use_cols].copy(deep=False)
 
     # If y is missing (e.g. validation), add it as NaN so downstream code stays unchanged
@@ -854,13 +862,14 @@ def reshape_multi_variable_to_wide_nodes(
     # ---- metadata ----
     meta = (
         df_use.groupby(["scenario", "Node Number"], sort=False, observed=True)[
-            [y_var_name, "X", "Y", "Z"]
+            [y_var_name] + (["X", "Y", "Z"] if use_coords else [])
         ]
         .first()
     )
 
     # fill missing coords from COORDS_DF if available
-    if "COORDS_DF" in globals() and getattr(globals()["COORDS_DF"], "columns", None) is not None:
+    if "COORDS_DF" in globals() and getattr(globals()["COORDS_DF"], "columns", None) is not None \
+        and use_coords:
         COORDS_DF = globals()["COORDS_DF"]
         if "Node Number" in COORDS_DF.columns and {"X", "Y", "Z"}.issubset(COORDS_DF.columns):
             coords_map = COORDS_DF.set_index("Node Number")[["X", "Y", "Z"]]
@@ -911,7 +920,7 @@ def reshape_multi_variable_to_wide_nodes(
 
     # ---- missing check (cheap; no melts) ----
     # If y was missing in the input, don't count its NaNs as an error.
-    check_cols = ["scenario", "Node Number", "X", "Y", "Z"] + var_time_cols
+    check_cols = ["scenario", "Node Number"] + (["X", "Y", "Z"] if use_coords else []) + var_time_cols
     if y_present:
         check_cols.insert(2, y_var_name)  # after Node Number
     # (guard)
@@ -998,7 +1007,7 @@ def reshape_multi_variable_to_wide_nodes(
     )
 
     # ---- order columns ----
-    col_order = ["scenario", "Node Number", y_var_name, "X", "Y", "Z"] + var_time_cols
+    col_order = ["scenario", "Node Number", y_var_name] + (["X", "Y", "Z"] if use_coords else []) + var_time_cols
     combined = combined[[c for c in col_order if c in combined.columns]]
 
     return combined
