@@ -735,6 +735,21 @@ def filter_outliers(df: pd.DataFrame, lower_pct=0.001, upper_pct=1):
     return df_no_outliers, outliers
 
 
+def add_graphic_delta_nodes(df: pd.DataFrame):
+    """
+    Adds a 'delta_health' column to the dataframe indicating the health status of nodes 
+    based on predefined defective nodes by region indicated by the given graphics.
+    """
+    df["delta_health"] = 1
+    scenarios = df["scenario"].unique().tolist()
+    for scenario in scenarios:
+        scenario_mask = df["scenario"] == scenario
+        region = scenario_number_to_combination(scenario)[-1]
+        defective_nodes = DEFECTIVE_NODES_BY_REGION[region]
+        df.loc[scenario_mask & df["Node Number"].isin(defective_nodes), "delta_health"] = 0
+    return df
+
+
 def reshape_multi_variable_to_wide_nodes(
     df,
     y_var_name: str,
@@ -753,7 +768,7 @@ def reshape_multi_variable_to_wide_nodes(
     Notes:
       - If all_nodes is provided, we *expand* to scenarios x all_nodes (can increase RAM!).
       - Replaces full "melt sanity check" with a sampled check (sanity_check_rows).
-      - If y_var_name is NOT in df (e.g. validation data), the function will still run and
+      - If y_var_name is NOT in df (e.g. v#alidation data), the function will still run and
         return a y_var_name column filled with NaN. Missing-check will NOT fail on that column.
     """
     import numpy as np
