@@ -16,6 +16,16 @@ def combination_to_string(combination):
     return string
 
 
+def scenario_number_to_string(scenario_number):
+    combination = scenario_number_to_combination(scenario_number)
+    train_config, load, season, region = combination
+    if DATA_FORMAT == "old":
+        string = f"{TRAIN_CONFIGS[train_config]}__{LOADS[load]}__{SEASONS[season]}__{REGIONS[region]}"
+    else:
+        string = f"{TRAIN_CONFIGS[train_config]}__{SEASONS[season]}__{LOADS[load]}__{REGIONS[region]}"
+    return string
+
+
 def scenario_number_to_combination(scenario_number):
     """
     Inverse of combination_to_scenario_number.

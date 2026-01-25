@@ -22,7 +22,8 @@ def plot_bridge_3d_structure(
     highlight_nodes=None, 
     color_scale: dict=None, 
     s: int=4, annotations: dict=None,
-    highlight_color: str="red"
+    highlight_color: str="red",
+    title: str="Bridge Structure 3D"
 ):    
     """
     Plots the bridge structure in 3D using Plotly.
@@ -64,7 +65,7 @@ def plot_bridge_3d_structure(
             hoverinfo='text'
         )])
         fig.update_layout(
-            title="Bridge Structure (colored by value)",
+            title=title,
             scene=dict(
                 xaxis_title='X [m]',
                 yaxis_title='Y [m]',
@@ -101,7 +102,7 @@ def plot_bridge_3d_structure(
             hoverinfo='text'
         )])
         fig.update_layout(
-            title="Bridge Structure (highlighted nodes in red)",
+            title=title,
             scene=dict(
                 xaxis_title='X [m]',
                 yaxis_title='Y [m]',
@@ -298,7 +299,7 @@ def plot_bridge_loads_3d_slider(df, combination):
         )
         fig.colorbar(scatter, shrink=0.5)
         ax.set_title(f"Bridge Loads at time {time_point}\nFor combination: {combination_to_string(combination)}")
-        fig.savefig(f"../visualization/bridge_loads_3d_{time_point}.png")
+        fig.savefig(f"../visualization/bridge_loads_3d_{time_point}.png", dpi=300)
         # fig.show()
 
     interact(
@@ -695,7 +696,7 @@ def plot_scenario_tree(
     # save tightly for PPT
     out_dir = Path("visualization")
     out_dir.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_dir / "scenario_hierarchy_tree_slide_clean_colored.svg", bbox_inches="tight", pad_inches=0.02)
+    plt.savefig(out_dir / "scenario_hierarchy_tree_slide_clean_colored.svg", bbox_inches="tight", pad_inches=0.02, dpi=1000)
     plt.show()
 
 
