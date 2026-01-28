@@ -130,7 +130,7 @@ for _, row in _beam_df.iterrows():
     BEAMS_TO_NODES[beam_num].append(node_num)
 DEFECTIVE_NODES_BY_REGION = {} 
 for region, beam_nums in REGION_BEAMS.items():
-    DEFECTIVE_NODES_BY_REGION[region] = _beam_df[_beam_df["Beam"].isin(beam_nums)]["Node"].unique().tolist()
+    DEFECTIVE_NODES_BY_REGION[region] = _beam_df[_beam_df["Beam_mirrored_num"].isin(beam_nums)]["Node"].unique().tolist()
 
 TRAIN_CONFIGS = {
     0: "One_train_1st_track",
