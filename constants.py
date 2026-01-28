@@ -87,7 +87,8 @@ else:
         5: "ip_3track_1_arc_678",               # Arc1, Track3
         6: "ip_2_arc_all_tracks_222",           # Arc2, Track1-3
     }
-REGION_BEAMS = {
+# With old beam numbers
+REGION_BEAMS_OLD = {
     0: [],
     1: [8, 98, 6, 95, 4, 92],
     2: [413, 440, 386, 332, 278, 407, 434, 380, 326, 272],
@@ -96,17 +97,33 @@ REGION_BEAMS = {
     5: [260, 314, 368, 422, 395],
     6: [14, 15, 107, 13, 12, 104, 10, 11, 101],
 }
-_beam_df = pd.read_csv("all_beam_nodes_annot.csv")
+# NOTE: NEW BEAM NUMBER CONVENTION:
+# First digit: track (1,2,3)
+# Second digit: arc (1,2,3)
+# Last two digits: beam index within arc (01,02,...,15)
+REGION_BEAMS = {
+    0: [],
+    1: [1101, 2101, 3101],
+    2: [1307, 1308, 1309, 1310, 3307, 3308, 3309, 3310],
+    3: [1307, 1308, 1309, 1310],
+    4: [1103, 1104, 1105],
+    5: [3106, 3107, 3108],
+    6: [1202, 2202, 3202],
+}
+# OLD: beam numbers meaningless
+# _beam_df = pd.read_csv("all_beam_nodes_annot.csv")
+# NEW: beam numbers same as in moodle slides
+_beam_df = pd.read_csv("all_beam_nodes_annot_new.csv")
 NODES_TO_BEAMS = {}
 for _, row in _beam_df.iterrows():
-    beam_num = int(row["Beam"])
+    beam_num = int(row["Beam_mirrored_num"])
     node_num = int(row["Node"])
     if node_num in NODES_TO_BEAMS:
         raise ValueError(f"Node {node_num} already in NODES_TO_BEAMS!")
     NODES_TO_BEAMS[node_num] = beam_num
 BEAMS_TO_NODES = {}
 for _, row in _beam_df.iterrows():
-    beam_num = int(row["Beam"])
+    beam_num = int(row["Beam_mirrored_num"])
     node_num = int(row["Node"])
     if beam_num not in BEAMS_TO_NODES:
         BEAMS_TO_NODES[beam_num] = []
