@@ -6,6 +6,9 @@ import pandas as pd
 import numpy as np
 from constants import *
 
+# -------------- #
+# COMBINATION FORMAT
+# T, L, S, R, V
 
 def combination_to_string(combination):
     train_config, load, season, region, variable = combination
@@ -235,6 +238,9 @@ def read_test_case(
     base_path /= "Results"
 
     filter_node_numbers = FILTER_NODE_NUMBERS
+
+    # Get scenario sent via email
+    test_combo = TEST_COMBINATIONS[test_case_num]
 
     df_vars = []
     for variable in VARIABLES.keys():
@@ -1158,7 +1164,6 @@ def _scenario_class_counts(X: pd.DataFrame, y: pd.Series, scenario_col: str = 's
     grp['n_total'] = grp['n0'] + grp['n1']
     return grp.reset_index()
 
-
 def split_by_scenario(
     X: pd.DataFrame,
     y: pd.Series,
@@ -1167,13 +1172,14 @@ def split_by_scenario(
     random_state: int = 0,
     stratified: bool = True,
     target_train_ratio_healthy: float | None = None,
-    require_both_classes_in_train: bool = True
+    require_both_classes_in_train: bool = True,
+    custom_test_set: int | None = None,
 ):
     """
     Group-aware split: no scenario leakage.
     If target_train_ratio_healthy is provided (0..1), chooses train scenarios to approximate that
     healthy(0)/unhealthy(1) ratio in training rows, while aiming for ~ (1-test_size) of total rows.
-    Otherwise, falls back to stratified group split.
+    If custom_test_set is provided, all scenarios from that region are forced into the test set.
     Returns: X_train, X_test, y_train, y_test, scenarios_train, scenarios_test
     """
     if scenario_col not in X.columns:
@@ -1183,8 +1189,17 @@ def split_by_scenario(
     counts = _scenario_class_counts(X, y_bin, scenario_col)
     scenarios_all = counts[scenario_col].to_numpy()
 
+    # Get combinations for all scenarios
+    combinations = [scenario_number_to_combination(sc) for sc in scenarios_all]
+    regions = np.array([comb[-1] for comb in combinations])
+
     total_rows = int(counts['n_total'].sum())
     desired_train_rows = int(round((1.0 - test_size) * total_rows))
+
+    # Force scenarios from a custom region into test set
+    forced_test_sc = np.array([], dtype=scenarios_all.dtype)
+    if custom_test_set is not None:
+        forced_test_sc = scenarios_all[regions == custom_test_set]
 
     # If no target ratio, do a simple stratified group split on scenarios
     if target_train_ratio_healthy is None:
@@ -1212,6 +1227,7 @@ def split_by_scenario(
             return rng.choice(cls_sc, size=min(n_test, len(cls_sc)), replace=False)
 
         test_sc = np.unique(np.concatenate([pick(pos_sc), pick(neg_sc)]))
+        test_sc = np.unique(np.concatenate([test_sc, forced_test_sc]))
         test_sc_set = set(test_sc)
         train_sc = np.array([sc for sc in scenarios_all if sc not in test_sc_set])
     else:
@@ -1219,6 +1235,10 @@ def split_by_scenario(
         target = float(np.clip(target_train_ratio_healthy, 0.0, 1.0))
         rng = np.random.RandomState(random_state)
         remaining = counts.sample(frac=1.0, random_state=random_state)  # shuffle scenarios
+
+        # Remove forced test scenarios from the pool
+        if len(forced_test_sc) > 0:
+            remaining = remaining[~remaining[scenario_col].isin(forced_test_sc)]
 
         # Optional seeding to ensure both classes present in train
         train_sel = []
@@ -1284,7 +1304,7 @@ def split_by_scenario(
             remaining = remaining.drop(index=best_idx)
 
         train_sc = np.array(train_sel)
-        test_sc = remaining[scenario_col].to_numpy()
+        test_sc = np.unique(np.concatenate([remaining[scenario_col].to_numpy(), forced_test_sc]))
 
     # Build masks and splits
     train_mask = X[scenario_col].isin(train_sc)
@@ -1302,9 +1322,10 @@ def split_by_scenario(
     # Diagnostics
     train_ratio_healthy = (y_train == 0).sum() / max(1, len(y_train))
     print(f"Scenarios: train={len(train_sc)}, test={len(test_sc)}")
+    if custom_test_set is not None:
+        print(f"Custom test region forced: {custom_test_set} (scenarios={len(forced_test_sc)})")
     print(f"Training healthy ratio: {train_ratio_healthy:.3f} (target={target_train_ratio_healthy if target_train_ratio_healthy is not None else 'n/a'})")
     print("Row-level class distribution (train):\n", y_train.value_counts())
     print("Row-level class distribution (test):\n", y_test.value_counts())
 
     return X_train, X_test, y_train, y_test, train_sc, test_sc
-

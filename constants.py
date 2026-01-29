@@ -53,6 +53,12 @@ ORIGINAL_VARIABLES = {
     6: "Shear Stress XZ (Pa)",
     7: "Shear Stress YZ (Pa)",
 }
+TRAIN_CONFIGS = {
+    0: "One_train_1st_track",
+    1: "One_train_middle_track",
+    2: "Two_trains_extreme_track_different_direction",
+    3: "Two_trains_extreme_track_same_direction",
+}
 if DATA_FORMAT == "old":
     LOADS = {
         0: "Bigger_train",
@@ -66,6 +72,11 @@ else:
 SEASONS = {
     0: "Summer",
     1: "Winter",
+}
+TEST_COMBINATIONS = {
+    15: (1, 1, 0),  # One_train_middle_track, Small_train, Summer
+    16: (2, 1, 1),  # Two_trains_extreme_track_different_direction, Small_train, Winter
+    20: (0, 1, 1),  # One_train_1st_track, Small_train, Winter
 }
 if DATA_FORMAT == "old":
     REGIONS = {
@@ -132,12 +143,6 @@ DEFECTIVE_NODES_BY_REGION = {}
 for region, beam_nums in REGION_BEAMS.items():
     DEFECTIVE_NODES_BY_REGION[region] = _beam_df[_beam_df["Beam_mirrored_num"].isin(beam_nums)]["Node"].unique().tolist()
 
-TRAIN_CONFIGS = {
-    0: "One_train_1st_track",
-    1: "One_train_middle_track",
-    2: "Two_trains_extreme_track_different_direction",
-    3: "Two_trains_extreme_track_same_direction",
-}
 INDICATORS = [
     "health",
     "region",
@@ -198,7 +203,8 @@ with open("I_beam_nodes.txt", "r") as f:
 VALID_NODE_NUMBERS = [nn for nn in NODE_NUMBERS if nn not in (NODES_MISSING_STRESS.union(NODES_MISSING_DEFORMATION))]
 
 # FILTER_NODE_NUMBERS = VALID_NODE_NUMBERS
-FILTER_NODE_NUMBERS = set(X_BEAM_NODES).union(I_BEAM_NODES)
+# FILTER_NODE_NUMBERS = set(X_BEAM_NODES).union(I_BEAM_NODES)
+FILTER_NODE_NUMBERS = set(I_BEAM_NODES)
 
 with open("superset_outliers.txt", "r") as f:
     global SUPERSET_OUTLIERS
